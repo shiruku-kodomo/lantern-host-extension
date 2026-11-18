@@ -6,7 +6,7 @@
   "js": "index.js",
   "css": "styles.css",
   "author": "灯火之外",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "homePage": "https://github.com/shiruku-kodomo/lantern-host-extension",
   "minimum_client_version": "1.14.0",
   "hooks": { "enable": "enable", "disable": "disable", "delete": "disable" }

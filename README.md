@@ -1,10 +1,12 @@
-# 灯火之外 · 主持 0.3.3
+# 灯火之外 · 主持 0.3.4
 
 电脑与手机本机 SillyTavern 共用的标准前端扩展，无需 DSH 服务或服务器插件。模型、Agent 提示词和功能设置全局共用；人物、资源、物品、任务和情报按酒馆聊天与历史分支隔离。正文继续使用酒馆当前连接，玩家手动发送。
 
 ## 安装与更新
 
 正式发布跟随 `stable` 分支；更新说明见 [CHANGELOG.md](CHANGELOG.md)，本轮问题复盘及真实模型测试见 [REVIEW_0.3.3.md](REVIEW_0.3.3.md)。
+
+手机原生安装与更新验证见 [INSTALL_VALIDATION.md](INSTALL_VALIDATION.md)。
 
 实测 SillyTavern 1.19.0。扩展安装地址：`https://github.com/shiruku-kodomo/lantern-host-extension`，选择 `stable` 分支。公开仓库安装和更新不需要填写 GitHub Token；电脑与手机都使用酒馆原生 Git 功能。
 

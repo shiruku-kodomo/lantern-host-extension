@@ -1,4 +1,4 @@
-export const VERSION='0.3.3';
+export const VERSION='0.3.4';
 export const REPOSITORY='https://github.com/shiruku-kodomo/lantern-host-extension';
 const OFFICIAL='github.com/shiruku-kodomo/lantern-host-extension';
 export function officialRemote(remote){
@@ -10,7 +10,9 @@ export class ExtensionUpdater {
   async scope(){
     const all=await this.bridge.http('/api/extensions/discover');
     const own=all.filter(e=>e.name==='third-party/lantern-host-extension'||e.name==='lantern-host-extension');
-    const selected=own.find(e=>e.type==='local')||own[0];
+    const loaded=own.length>1?await this.bridge.extensionType?.('lantern-host-extension'):own[0]?.type;
+    const selected=own.find(e=>e.type===loaded);
+    if(own.length>1&&!selected)throw new Error('检测到全局和账号两份安装，但酒馆未确认实际加载范围，已停止更新以避免改错目录。');
     if(!selected)throw new Error('酒馆未识别主持扩展安装范围。');
     return {extensionName:'lantern-host-extension',global:selected.type==='global'};
   }

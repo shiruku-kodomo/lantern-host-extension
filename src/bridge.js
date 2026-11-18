@@ -81,6 +81,7 @@ export class TavernBridge {
     if(data.format!=='lantern-backup-v2')throw new Error('不支持的备份格式。');return data;
   }
   async worldModule() { return import('/scripts/world-info.js'); }
+  async extensionType(name) { const mod=await import('/scripts/extensions.js');return mod.extensionTypes?.[`third-party/${name}`]||mod.extensionTypes?.[name]||null; }
   async saveWorld(name,data) {
     await this.http('/api/worldinfo/edit',{name,data});
     const read=await this.http('/api/worldinfo/get',{name});

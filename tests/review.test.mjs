@@ -229,3 +229,10 @@ test('updater rechecks scope and origin, fetches stable before switching, and re
   assert.equal(officialRemote('git@github.com:shiruku-kodomo/lantern-host-extension.git'),true);
   await assert.rejects(new ExtensionUpdater(updaterBridge({currentCommitHash:'a',remoteUrl:'https://github.com/other/project',currentBranchName:'stable'})).install(),/来源/);
 });
+test('dual installs update the scope actually loaded by Tavern; an unknown loaded scope is never guessed',async()=>{
+  const bridge=updaterBridge({currentCommitHash:'a',remoteUrl:REPOSITORY,currentBranchName:'stable',isUpToDate:true});
+  const http=bridge.http;bridge.http=(path,payload)=>path.endsWith('/discover')?Promise.resolve([{name:'third-party/lantern-host-extension',type:'local'},{name:'third-party/lantern-host-extension',type:'global'}]):http(path,payload);
+  bridge.extensionType=async()=> 'global';assert.equal((await new ExtensionUpdater(bridge).scope()).global,true);
+  bridge.extensionType=async()=> 'local';assert.equal((await new ExtensionUpdater(bridge).scope()).global,false);
+  bridge.extensionType=async()=> null;await assert.rejects(new ExtensionUpdater(bridge).scope(),/实际加载范围/);
+});
