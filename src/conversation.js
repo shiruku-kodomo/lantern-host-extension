@@ -31,6 +31,7 @@ export function activeMessages(session) {
   const path = [], visited = new Set();
   let parent = 'root';
   while (byParent.has(parent)) {
+    if(tree.selected[parent]===null)break;
     const children = byParent.get(parent);
     const node = children.find(n => n.id === tree.selected[parent]) || children.at(-1);
     if (visited.has(node.id)) throw new Error('主持分支出现循环。');

@@ -1,4 +1,5 @@
 import { NAMESPACE, currentChatKey, selectedHistory, composeInput } from './core.js';
+import { digest } from './game-db.js';
 export class TavernBridge {
   constructor(context = () => globalThis.SillyTavern?.getContext?.(), fetcher = globalThis.fetch.bind(globalThis)) {
     this.context = context; this.fetch = fetcher; this.account = 'default';
@@ -16,6 +17,7 @@ export class TavernBridge {
   async http(path, payload) {
     const result = await this.fetch(path, { method: payload === undefined ? 'GET' : 'POST', headers: this.headers(), ...(payload === undefined ? {} : { body: JSON.stringify(payload) }) });
     if (!result.ok) throw new Error(`酒馆请求失败（${result.status}）`);
+    if(result.status===204)return null;
     return result.json();
   }
   settings() { return this.context().extensionSettings[NAMESPACE]; }
@@ -48,6 +50,50 @@ export class TavernBridge {
     };
   }
   savedSession() { return this.context().chatMetadata?.[NAMESPACE]; }
+  async writeBackup(data) {
+    const json = JSON.stringify(data), hash = await digest(json), name = `lantern-${data.branch.campaignId}-${data.branch.branchId}-${hash}.json`;
+    if(json.length>512000){
+      const chunks=[];for(let offset=0;offset<json.length;){let end=Math.min(offset+256000,json.length);if(end<json.length&&/[\uD800-\uDBFF]/.test(json[end-1]))end--;const chunk=json.slice(offset,end),sha256=await digest(chunk),path=await this.uploadText(`lantern-chunk-${sha256}.txt`,chunk);chunks.push({path,sha256});offset=end;}
+      const manifest={format:'lantern-backup-index-v2',payloadHash:hash,chunks},text=JSON.stringify(manifest),sha256=await digest(text),path=await this.uploadText(name,text),pointer={path,sha256,bytes:new TextEncoder().encode(json).length,chunked:true};await this.readBackup(pointer);return pointer;
+    }
+    const path=await this.uploadText(name,json),pointer={path,sha256:hash,bytes:new TextEncoder().encode(json).length};await this.readBackup(pointer);return pointer;
+  }
+  async uploadText(name,json){
+    const bytes = new TextEncoder().encode(json); let binary = '';
+    for(let i=0;i<bytes.length;i+=0x8000)binary+=String.fromCharCode(...bytes.subarray(i,i+0x8000));
+    const uploaded = await this.http('/api/files/upload', { name, data: btoa(binary) });
+    if(!uploaded.path)throw new Error('本局已保存，酒馆未返回备份路径。');
+    return uploaded.path;
+  }
+  async backupText(pointer) {
+    const url = new URL(pointer.path, globalThis.location?.href || 'http://localhost/');
+    if(globalThis.location&&url.origin!==location.origin)throw new Error('备份路径不属于当前酒馆。');
+    const response=await this.fetch(url,{headers:this.headers(),cache:'no-store'});
+    if(!response.ok)throw new Error('本局已保存，备份读取失败，可重试同步。');
+    const text=await response.text();if(await digest(text)!==pointer.sha256)throw new Error('备份核对失败，未标记同步完成。');
+    return text;
+  }
+  async readBackup(pointer) {
+    let text=await this.backupText(pointer),data=JSON.parse(text);
+    if(data.format==='lantern-backup-index-v2'){
+      const pieces=[];for(const chunk of data.chunks)pieces.push(await this.backupText(chunk));text=pieces.join('');if(await digest(text)!==data.payloadHash)throw new Error('分块备份整体校验失败。');data=JSON.parse(text);
+    }
+    if(data.format!=='lantern-backup-v2')throw new Error('不支持的备份格式。');return data;
+  }
+  async worldModule() { return import('/scripts/world-info.js'); }
+  async saveWorld(name,data) {
+    await this.http('/api/worldinfo/edit',{name,data});
+    const read=await this.http('/api/worldinfo/get',{name});
+    if(await digest(read)!==await digest(data))throw new Error('情报世界书写入后核对失败。');
+    const mod=await this.worldModule();mod.worldInfoCache?.delete(name);await mod.updateWorldInfoList();
+    await mod.loadWorldInfo(name);return read;
+  }
+  async bindWorld(key,name) {
+    if(key!==this.key())throw new Error('聊天已经切换，世界书绑定留待原局重试。');
+    this.context().chatMetadata.world_info=name;await this.context().saveChat();
+    const ctx=this.context(),rows=ctx.groupId?await this.http('/api/chats/group/get',{id:ctx.chatId}):await this.http('/api/chats/get',{avatar_url:ctx.characters[ctx.characterId].avatar,file_name:ctx.chatId});
+    if(rows?.[0]?.chat_metadata?.world_info!==name)throw new Error('世界书绑定未确认保存。');
+  }
   async readRemoteSession() {
     const ctx = this.context();
     const rows = ctx.groupId

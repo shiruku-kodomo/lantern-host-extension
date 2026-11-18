@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { emptySession, requestMessages } from '../src/core.js';
 import { appendMessage, editUserMessage } from '../src/conversation.js';
-import { ContextManager, estimateTokens } from '../src/context.js';
+import { ContextManager, estimateTokens, contextBudget } from '../src/context.js';
 import { parseCommand, validateCommands, commandList, expandCommand, updateGoal } from '../src/commands.js';
 
 test('automatic compaction preserves original tree, keeps recent turns, and invalidates on branch edits', async () => {
@@ -12,7 +12,7 @@ test('automatic compaction preserves original tree, keeps recent turns, and inva
   const manager = new ContextManager({ chat: async (...args) => { calls.push(args); return 'Confirmed earlier facts: location A, value 17. Unresolved decision B.'; } });
   const input = { settings: { systemPrompt: 'host', autoCompact: true }, session, context: null };
   const result = await manager.prepare(input, { contextWindow: 12000, maxTokens: 1000 });
-  assert.equal(calls.length, 1); assert.ok(result.compaction);
+  assert.ok(calls.length>=1);for(const [profile,messages]of calls)assert.ok(estimateTokens(messages)<contextBudget(profile).inputLimit); assert.ok(result.compaction);
   assert.ok(result.used < result.compaction.estimatedBefore); assert.equal(session.conversation.nodes.length, 20);
   session.compactions.push(result.compaction);
   assert.ok(requestMessages(input).some(m => m.content.includes('Confirmed earlier facts')));

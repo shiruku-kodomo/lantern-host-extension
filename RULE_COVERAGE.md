@@ -1,0 +1,51 @@
+# 机制执行覆盖清单
+
+23项原机制及任务结算、货币补充共25项版本化规则。下表表示已注册的执行入口，不表示每种内容组合都经过穷尽测试。
+
+| 策划机制 | 脚本／工具入口 | 规则版本 |
+| --- | --- | --- |
+| 骰子机制 | 世界实体定义、运行时依赖读取与参战／出场验证 | 2026-11-14.1 |
+| 好感度与提议机制 | `relationship.daily`、`relationship.propose` | 2026-11-14.1 |
+| 战斗机制 | `combat.phase`、`combat.start`、`combat.exchange`、`combat.finish` | 2026-11-14.1 |
+| 成长与败北结算机制 | `growth.victory`、`growth.defeat` | 2026-11-14.1 |
+| 变身机制 | `form.switch` | 2026-11-14.1 |
+| 技能机制 | `definition.create`、`skill.use` | 2026-11-14.1 |
+| 正负面状态机制 | `effect.apply`、`effect.expire` | 2026-11-14.1 |
+| 物品机制 | `item.acquire`、`item.transfer`、`item.use`、`item.equip` | 2026-11-14.1 |
+| 调查与情报机制 | `knowledge.record`、`knowledge.share`、`knowledge.resolve` | 2026-11-14.1 |
+| 时间与休整机制 | `time.advance`、`rest.recover` | 2026-11-14.1 |
+| 任务机制 | `quest.create`、`quest.board`、`quest.accept`、`quest.progress` | 2026-11-14.1 |
+| 突发事件机制 | `random.event` | 2026-11-14.1 |
+| 角色解锁与正式合作机制 | `entity.create`、`cooperation.accept`、`entity.configure` | 2026-11-14.1 |
+| 同行与叙述切换机制 | `narration.select`、`companion.select` | 2026-11-14.1 |
+| 地图与移动机制 | `route.create`、`movement.travel` | 2026-11-14.1 |
+| 国家机制 | `world.register` | 2026-11-14.1 |
+| 城市机制 | 世界实体定义、运行时依赖读取与参战／出场验证 | 2026-11-14.1 |
+| 组织机制 | `world.progress` | 2026-11-14.1 |
+| 兵种机制 | `entity.outcome` | 2026-11-14.1 |
+| 精英机制 | 世界实体定义、运行时依赖读取与参战／出场验证 | 2026-11-14.1 |
+| Boss机制 | 世界实体定义、运行时依赖读取与参战／出场验证 | 2026-11-14.1 |
+| 据点机制 | 世界实体定义、运行时依赖读取与参战／出场验证 | 2026-11-14.1 |
+| 身份暴露与信誉机制 | `identity.observe` | 2026-11-14.1 |
+| 任务结算机制调整 | `quest.finish` | 2026-11-14.1 |
+| 统一货币制度调整 | `quest.pay`、`currency.transfer`、`currency.trade`、`currency.quote` | 2026-11-14.1 |
+
+世界类细分规则在world.register、world.progress、entity.create、entity.outcome及combat.start中按实际类别校验；判定前读取关联规则闭包。技能的真实条件、物品、目标及战果仍需Agent按正式字段组织，脚本拒绝缺失的确定参数。
+
+## 关键数值边界
+
+- 单个普通D20保留天然1/20；战斗对抗不套用普通检定暴击。
+- 速度对抗比较双方速度；攻防根据攻守关系选取面板，平局守方胜。
+- 5次交锋分别保存，块开始上限作为一次扣血基准。成长固定主要敌人，永久领取按角色和真实敌方个体去重。
+- A/B/C成长档位顺序、最低+2、D11+9百分比、D3采样及所有形态同步。
+- 精确分数保存HP/MP；形态切换保持比例，资源和上限变化另算；最终Boss明确的MP绝对值承接优先。
+- 技能先支付、抵抗及生效，再投交锋骰；交锋单位期限和每块限用分别记录；同名队伍修正不重复堆叠。
+- 大任务成功全参与者五属性+N；道具/情报/人物奖励各自D100，付款为另一个实际交易事件。
+- 全局晶币、整笔报价向上取整、默认分配余款归负责人、钱包和库存事务提交。
+- 世界Boss前置、位置知情和路线实际到达检查；隔离压力测试使用不开放给LLM的scenarioTest开关。
+- 同一事件全部个人变化完成后再检查整局，玩家胜利优先。
+- 核心情报以正式来源定义判定；生成名字不自动变成核心。失效过渡记录可从投影清理，原历史及未完任务依赖保留。
+
+## 验证文件
+
+tests/game.test.mjs、tests/runtime.test.mjs、tests/durability.test.mjs覆盖执行及异常边界；tests/phase2-browser.mjs验证真实酒馆工具、世界书与存档链路。用户指定的两组基础战斗见BATTLE_TESTS.md。

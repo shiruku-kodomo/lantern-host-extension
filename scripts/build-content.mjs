@@ -2,6 +2,7 @@ import { readdir, readFile, mkdir, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { extractPanels } from '../src/rules.js';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const source = path.resolve(process.argv[2] || path.join(root, '../../3.策划文档'));
@@ -35,7 +36,10 @@ for (const section of sections) {
     const id = hash(docPath).slice(0, 24);
     const title = content.match(/^#\s+(.+)$/m)?.[1]?.trim() || path.basename(full);
     part[id] = content; partBytes += Buffer.byteLength(content);
-    catalog.entries.push({ id, path: docPath, title, part: `part-${partNumber}.json`, bytes: Buffer.byteLength(content), sha256: hash(content) });
+    const canonicalId=content.match(/\*\*固定标识\*\*\s*`([^`]+)`/)?.[1]||`document:${id}`;
+    const aliases=[title,...[...content.matchAll(/^(?:name|nicknames|名称|代号)\s*[:：]\s*(.+)$/gm)].map(m=>m[1].trim())];
+    const fields=Object.fromEntries(Object.entries(extractPanels(content)).flatMap(([form,panel])=>Object.entries(panel).map(([field,value])=>[`forms.${form}.${field}`,{value,source:'原文面板解析',version:hash(content)}])));
+    catalog.entries.push({ id, entityId:canonicalId, aliases:[...new Set(aliases)], fields, path: docPath, title, part: `part-${partNumber}.json`, bytes: Buffer.byteLength(content), sha256: hash(content) });
   }
 }
 await flush();

@@ -1,6 +1,7 @@
 import { hydrateConversation, compactionFor } from './conversation.js';
+import { normalizeAgentPrompts } from './agent-prompts.js';
 export const NAMESPACE = 'lantern_host';
-export const DEFAULT_PROMPT = '你是《灯火之外》的主持助手。与玩家讨论当前游戏，依据提供的策划资料和本局记录回答。明确区分资料事实与建议。当前阶段尚未接入正式多 Agent 判定与数值结算工具，不得宣称已经调用骰子、扣除物品或修改本局数值。';
+export const DEFAULT_PROMPT = '你是《灯火之外》的主持。原策划决定机制，正式内容提供资料，本局数据库记录实际事实。按依赖分派判定、分析、情报与角色Agent；只用真实工具返回结算，不能编造骰子或数值。开场按规则自动建档；缺失内容通过生成工具补齐一次并保存。设置讨论、查看记录不产生游戏动作。重大选择交还玩家，正文由酒馆连接负责。';
 export function emptySession() {
   return { version: 1, revision: 0, messages: [], draft: '', handoff: '', selectedDocs: [], contextEnabled: true, pending: null, updatedAt: 0, compactions: [] };
 }
@@ -13,13 +14,15 @@ export function readSession(raw) {
   return session;
 }
 export function normalizeSettings(raw = {}) {
+  const legacyDefault='你是《灯火之外》的主持助手。与玩家讨论当前游戏，依据提供的策划资料和本局记录回答。明确区分资料事实与建议。当前阶段尚未接入正式多 Agent 判定与数值结算工具，不得宣称已经调用骰子、扣除物品或修改本局数值。';
   return {
-    version: 1, systemPrompt: typeof raw.systemPrompt === 'string' ? raw.systemPrompt : DEFAULT_PROMPT,
+    version: 1, systemPrompt: typeof raw.systemPrompt === 'string' && raw.systemPrompt!==legacyDefault ? raw.systemPrompt : DEFAULT_PROMPT,
     activeProfileId: raw.activeProfileId || '', contextLimit: Math.max(1, Math.min(200, Number(raw.contextLimit) || 30)),
     autoCompact: raw.autoCompact !== false,
+    agentPrompts: normalizeAgentPrompts(raw), agentPromptVersion: 2,
     disabledCommands: Array.isArray(raw.disabledCommands) ? [...raw.disabledCommands] : [],
     customCommands: Array.isArray(raw.customCommands) ? structuredClone(raw.customCommands) : [],
-    profiles: Array.isArray(raw.profiles) ? structuredClone(raw.profiles) : [],
+    profiles: Array.isArray(raw.profiles) ? structuredClone(raw.profiles).map(p=>({...p,protocol:p.protocol||'openai',maxTokens:p.maxTokens??4096,temperature:p.temperature??0.7})) : [],
   };
 }
 export function currentChatKey(ctx, account = 'default') {

@@ -1,9 +1,13 @@
 import { TavernBridge } from './src/bridge.js';
 import { LocalStore } from './src/storage.js';
 import { ModelClient, connectionPayload } from './src/provider.js';
-import { SessionRepository } from './src/sessions.js';
+import { CampaignSessions, branchKey } from './src/game-db.js';
+import { HostRuntime, AGENT_PROMPTS, handoffPackage, validatePlan } from './src/agents.js';
+import { WorldbookProjection } from './src/worldbook.js';
+import { ExtensionUpdater, VERSION, REPOSITORY } from './src/updater.js';
+import { renderActivity } from './src/activity.js';
 import { hydrateConversation, appendMessage, editUserMessage, versionsOf, switchVersion } from './src/conversation.js';
-import { ContextManager, contextBudget, estimateTokens } from './src/context.js';
+import { ContextManager, contextBudget, estimateTokens, modelCapacity } from './src/context.js';
 import { BUILTIN_COMMANDS, commandList, parseCommand, expandCommand, updateGoal, validateCommands } from './src/commands.js';
 import { renderMarkdown } from './src/markdown.js';
 import { DocumentLibrary } from './src/documents.js';
@@ -18,19 +22,26 @@ let initializing;
 class HostWorkspace {
   constructor(bridge, storage) {
     this.bridge = bridge; this.storage = storage; this.model = new ModelClient(bridge);
-    this.sessions = new SessionRepository(bridge, storage); this.profileDrafts = new Map();
+    this.sessions = new CampaignSessions(bridge, storage); this.profileDrafts = new Map();
+    this.projection = new WorldbookProjection(bridge, storage, this.sessions.db); this.updater = new ExtensionUpdater(bridge);
     this.contextManager = new ContextManager(this.model);
     this.settings = normalizeSettings(bridge.settings()); this.session = emptySession(); this.key = null;
     this.tab = 'chat'; this.error = ''; this.saveError = ''; this.syncing = false;
     this.cleanups = []; this.generation = 0; this.loadGeneration = 0; this.busy = false;
     this.models = []; this.profileDraft = null; this.promptDraft = this.settings.systemPrompt; this.settingsDirty = false;
     this.commandDrafts = structuredClone(this.settings.customCommands); this.disabledCommandDrafts = new Set(this.settings.disabledCommands);
+    this.agentPromptDrafts = structuredClone(this.settings.agentPrompts);
+    this.agentPromptsDirty = false;
+    this.activityViews = new Map();
   }
   async init() {
     this.buildShell();
     this.syncAppearance();
     this.cleanups.push(this.bridge.on('SETTINGS_UPDATED', () => this.syncAppearance()));
     this.cleanups.push(this.bridge.on('CHAT_CHANGED', () => this.changeChat()));
+    this.cleanups.push(this.bridge.on('CHAT_RENAMED', () => this.changeChat()));
+    this.cleanups.push(this.bridge.on('CHAT_CREATED', () => this.newChatBinding()));
+    this.cleanups.push(this.bridge.on('GROUP_CHAT_CREATED', () => this.newChatBinding()));
     for (const event of ['MESSAGE_SWIPED', 'MESSAGE_EDITED', 'MESSAGE_DELETED', 'MESSAGE_RECEIVED', 'MESSAGE_SENT']) {
       this.cleanups.push(this.bridge.on(event, () => {
         if (this.busy && contextSignature(this.bridge.context()) !== this.runningContext) this.stop('酒馆上下文已变化，本次生成已停止，请核对后重试。');
@@ -48,24 +59,26 @@ class HostWorkspace {
     this.cleanups.push(() => { window.visualViewport?.removeEventListener('resize', viewport); window.visualViewport?.removeEventListener('scroll', viewport); });
     const unload = event => { if (this.saveError || this.settingsDirty || this.syncing || this.draftTimer) { event.preventDefault(); event.returnValue = ''; } };
     window.addEventListener('beforeunload', unload); this.cleanups.push(() => window.removeEventListener('beforeunload', unload));
-    await this.changeChat();
     this.library = new DocumentLibrary(this.storage);
     try { await this.library.init(); } catch (error) { this.libraryError = error.message; }
+    this.runtime = new HostRuntime({ db: this.sessions.db, store: this.storage, model: this.model, library: this.library, projection: this.projection });
+    await this.changeChat();
     this.render();
   }
   buildShell() {
     this.root = document.createElement('div'); this.root.id = ROOT_ID;
-    this.root.innerHTML = `<button class="lh-launcher" hidden aria-label="恢复主持窗口">灯</button>
+    this.root.innerHTML = `<button class="lh-launcher" aria-label="打开主持窗口" title="打开主持 · 可拖动">灯</button>
       <dialog class="lh-backdrop" aria-label="灯火之外主持" hidden><section class="lh-panel" tabindex="-1">
       <header class="lh-header"><div class="lh-brand"><span class="lh-mark">灯</span><div><strong>灯火之外</strong><small>主持</small></div></div><span class="lh-chat-name"></span><div class="lh-window-actions">
       <button data-window="minimize" title="收起" aria-label="收起主持">${icon('minimize')}</button><button data-window="expand" title="全屏" aria-label="切换全屏">${icon('expand')}</button><button data-window="close" title="关闭" aria-label="关闭主持">${icon('close')}</button></div></header>
       <nav class="lh-nav" aria-label="主持工作区"><button data-tab="chat">${icon('chat')} 对话</button><button data-tab="documents">${icon('files')} 资料</button><button data-tab="settings">${icon('model')} 模型与提示词</button></nav>
-      <div class="lh-alert" role="alert" hidden></div><main class="lh-main"></main><footer class="lh-footer"><span class="lh-save-status" role="status"></span><button data-action="retry-save" hidden>重试保存</button><button data-action="export">导出本局</button></footer>
+      <div class="lh-alert" role="alert" hidden></div><main class="lh-main"></main><footer class="lh-footer"><span class="lh-save-status" role="status"></span><button data-action="retry-save" hidden>重试保存</button><button data-action="archives">每轮存档</button><button data-action="export">导出本局</button></footer>
       </section></dialog>`;
     // A body backdrop-filter/transform creates a containing block for fixed children.
     // Portal beside body so mobile scroll and keyboard panning cannot displace the workspace.
     document.documentElement.append(this.root);
     this.root.querySelector('.lh-launcher').onclick = () => this.open();
+    this.setupLauncher();
     this.root.querySelector('.lh-backdrop').addEventListener('cancel', event => { event.preventDefault(); this.close(); });
     this.root.addEventListener('click', event => {
       const button = event.target.closest('button');
@@ -107,13 +120,49 @@ class HostWorkspace {
     if (!dialog.open) dialog.showModal();
     this.root.querySelector('.lh-launcher').hidden = true;
     this.render(); this.root.querySelector('.lh-panel').focus();
+    this.checkUpdates().catch(()=>{});
+  }
+  async checkUpdates(force=false) {
+    if(this.updateChecking||(!force&&Date.now()-(this.updateCheckedAt||0)<3600000))return;
+    this.updateChecking=true;
+    try{this.updateStatus=await this.updater.check();}
+    catch(error){this.updateStatus={state:'unknown',message:this.redact(error.message)};}
+    finally{this.updateChecking=false;this.updateCheckedAt=Date.now();this.renderUpdateStatus();}
+  }
+  renderUpdateStatus(){
+    const status=this.root.querySelector('.lh-update-status');if(status)status.textContent=this.updateStatus?.message||'打开工作区时自动检查 GitHub 更新。';
+    const version=this.root.querySelector('.lh-installed-version');if(version)version.textContent=`当前 ${VERSION}${this.updateStatus?.currentBranchName?' · '+this.updateStatus.currentBranchName:''}`;
+    const install=this.root.querySelector('[data-action="update-install"]');if(install){install.hidden=!this.updateStatus?.managed||this.updateStatus.state==='latest';install.disabled=!!this.updateInstalling;}
   }
   close(minimize = false) {
     if (!minimize) this.stop();
     const dialog = this.root.querySelector('.lh-backdrop'); if (dialog.open) dialog.close(); dialog.hidden = true;
-    this.root.querySelector('.lh-launcher').hidden = !minimize;
+    this.root.querySelector('.lh-launcher').hidden = false;
     this.previousFocus?.focus?.();
     if (this.key) this.persist().catch(error => { this.saveError = error.message; });
+  }
+  setupLauncher() {
+    const node=this.root.querySelector('.lh-launcher');let drag;
+    const clamp=(x,y)=>{node.style.left=`${Math.max(4,Math.min(innerWidth-54,x))}px`;node.style.top=`${Math.max(4,Math.min((window.visualViewport?.height||innerHeight)-54,y))}px`;node.style.right='auto';node.style.bottom='auto';};
+    this.storage.get('launcher').then(p=>{if(p)clamp(p.x,p.y);}).catch(()=>{});
+    node.addEventListener('pointerdown',e=>{const r=node.getBoundingClientRect();drag={x:e.clientX,y:e.clientY,left:r.left,top:r.top,moved:false};node.setPointerCapture(e.pointerId);});
+    node.addEventListener('pointermove',e=>{if(!drag)return;if(Math.hypot(e.clientX-drag.x,e.clientY-drag.y)>5)drag.moved=true;if(drag.moved)clamp(drag.left+e.clientX-drag.x,drag.top+e.clientY-drag.y);});
+    node.addEventListener('pointerup',()=>{if(drag?.moved){const r=node.getBoundingClientRect();this.storage.put('launcher',{x:r.left,y:r.top}).catch(()=>{});node.onclick=e=>{e.preventDefault();node.onclick=()=>this.open();};}drag=null;});
+    const resize=()=>{if(node.style.left)clamp(parseFloat(node.style.left),parseFloat(node.style.top));};window.addEventListener('resize',resize);this.cleanups.push(()=>window.removeEventListener('resize',resize));
+  }
+  async newChatBinding() {
+    // ST may copy character metadata when creating a chat. A new native chat always gets a fresh campaign.
+    const ctx=this.bridge.context();if(!this.bridge.key())return;
+    const remote=await this.bridge.readRemoteSession().catch(()=>null);
+    if(remote?.format==='lantern-campaign-v2'){
+      const key=this.bridge.key(),branch=await this.sessions.db.create();
+      const binding={format:'lantern-campaign-v2',campaignId:branch.campaignId,branchId:branch.branchId,backup:null};
+      await this.storage.write('bindings',key,binding);
+      this.sessions.records.set(key,{binding,branch,base:JSON.stringify(remote)});
+      this.stop();this.key=key;this.session=branch.session;hydrateConversation(this.session);
+      await this.projection.ensureInitial(branch.campaignId,key);await this.persist().catch(()=>{});this.render();return;
+    }
+    await this.changeChat();
   }
   redact(message) {
     let result = String(message || '操作失败，请重试。');
@@ -135,6 +184,11 @@ class HostWorkspace {
       const { session, dirty } = await this.sessions.load(key);
       if (generation !== this.loadGeneration) return;
       this.session = session;
+      hydrateConversation(this.session);
+      const {campaignId,branchId}=this.sessions.current(key).binding;
+      await this.projection.ensureInitial(campaignId,key);
+      if(generation!==this.loadGeneration)return;
+      await this.projection.sync(campaignId,branchId,key).catch(error=>{this.saveError=`本局已恢复，情报同步待重试：${error.message}`;});
       if (dirty) this.saveError = '本地有未同步内容，可重试保存到酒馆存档。';
       if (this.session.pending) {
         for (const m of this.session.messages) if (m.status === 'running') m.status = 'interrupted';
@@ -151,8 +205,8 @@ class HostWorkspace {
     return (async () => {
       try {
         const confirmed = await this.sessions.sync(key, snapshot);
-        if (this.key === key && confirmed) this.saveError = '';
-      } catch (error) { if (this.key === key) this.saveError = this.redact(error.message); throw error; }
+        if (this.key === key && confirmed) {this.saveError = '';this.localSaveFailed=false;}
+      } catch (error) { if (this.key === key) {this.saveError = this.redact(error.message);this.localSaveFailed=error.storageFailure===true;} throw error; }
       finally { this.syncCount--; this.syncing = this.syncCount > 0; this.renderStatus(); }
     })();
   }
@@ -167,13 +221,14 @@ class HostWorkspace {
     if (!this.key) return;
     const key = this.key;
     this.session.updatedAt = Date.now();
-    this.sessions.cache(key, this.session).catch(error => { if (key === this.key) { this.saveError = error.message; this.renderStatus(); } });
+    this.sessions.cache(key, this.session).catch(error => { if (key === this.key) { this.saveError = error.message;this.localSaveFailed=error.storageFailure===true; this.renderStatus(); } });
   }
   renderStatus() {
     const node = this.root.querySelector('.lh-save-status');
-    node.textContent = this.saveError || (this.syncing || this.draftTimer ? '保存中…' : this.key ? '已保存' : '先在酒馆打开一段聊天');
+    node.textContent = this.saveError ? `${this.localSaveFailed?'本地尚未保存，请保留窗口并导出':'本地已保存，备份或同步待重试'}：${this.saveError}` : (this.syncing || this.draftTimer ? '本地保存 / 备份同步中…' : this.key ? '本局已保存' : '先在酒馆打开一段聊天');
     node.classList.toggle('lh-error-text', Boolean(this.saveError));
     this.root.querySelector('[data-action="retry-save"]').hidden = !this.saveError;
+    const launcher=this.root.querySelector('.lh-launcher');launcher.dataset.state=this.busy?'running':this.saveError?'pending':'saved';launcher.title=this.busy?'主持运行中':this.saveError?'本局保存或同步待重试':'打开主持 · 可拖动';
   }
   renderAlert() {
     const node = this.root.querySelector('.lh-alert'); node.hidden = !this.error;
@@ -192,10 +247,13 @@ class HostWorkspace {
   profile() { return this.settings.profiles.find(p => p.id === this.settings.activeProfileId); }
   renderChat() {
     const main = this.root.querySelector('.lh-main');
+    const previousLog=main.querySelector('.lh-messages');
+    const previousScroll=previousLog?.dataset.chatKey===this.key?{top:previousLog.scrollTop,atBottom:previousLog.scrollHeight-previousLog.scrollTop-previousLog.clientHeight<48}:null;
     main.innerHTML = `<section class="lh-chat"><div class="lh-context-line"><label><input type="checkbox" id="lh-context-toggle" ${this.session.contextEnabled ? 'checked' : ''}>带入酒馆上下文</label><button data-action="context" class="lh-context-count"></button><span class="lh-model-label">${escape(this.profile()?.model || '未连接模型')}</span></div>
       <div class="lh-budget-line"><span class="lh-budget" role="status"></span><button data-action="compact" ${this.busy || !this.key ? 'disabled' : ''}>压缩较早对话</button></div><div class="lh-messages" role="log" aria-label="主持对话"></div>
       <div class="lh-selected-docs"></div><div class="lh-session-mode"></div><form class="lh-composer"><div class="lh-command-menu" role="listbox" aria-label="主持指令" hidden></div><textarea id="lh-input" rows="2" aria-label="给主持的消息" placeholder="和主持讨论这一轮，或输入 / 使用指令…" ${!this.key || this.loading || this.loadFailed ? 'disabled' : ''}>${escape(this.session.draft)}</textarea><button class="lh-primary" type="submit" ${!this.key || this.loading || this.loadFailed ? 'disabled' : ''}>${this.busy ? '停止' : '发送'}</button></form></section>`;
     const log = main.querySelector('.lh-messages');
+    log.dataset.chatKey=this.key||'';
     if (!this.session.messages.length) log.innerHTML = `<div class="lh-empty"><span class="lh-empty-mark">灯</span><h2>${this.loading ? '正在读取记录…' : this.key ? '开始这局的讨论' : '先打开酒馆聊天'}</h2><p>${this.key ? '主持对话会随当前聊天保存。' : '选择角色和聊天后，在这里继续。'}</p>${!this.profile() ? '<button data-tab="settings" class="lh-primary">连接主持模型</button>' : ''}</div>`;
     for (const message of this.session.messages) {
       const row = document.createElement('article'); row.className = `lh-message lh-${message.role}`; row.dataset.messageId = message.id;
@@ -205,7 +263,9 @@ class HostWorkspace {
       const actions = row.querySelector('.lh-message-actions');
       if (message.role === 'user') actions.innerHTML = `<button data-action="edit-message" data-id="${escape(message.id)}" title="编辑消息" aria-label="编辑消息" ${this.busy ? 'disabled' : ''}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="m15 4 5 5M4 20l5-1L21 7a2 2 0 0 0-5-5L4 14Z"/></svg></button>`;
       else if (message.status !== 'running') actions.innerHTML = `${message.content ? `<button data-action="preview" data-id="${escape(message.id)}">交给酒馆</button>` : ''}<button data-action="retry" data-id="${escape(message.id)}" ${this.busy ? 'disabled' : ''}>重试这次回复</button>`;
+      if(message.role==='assistant'&&message.commit&&message.id!==this.session.messages.at(-1)?.id)actions.insertAdjacentHTML('beforeend',`<button data-action="restore-round" data-id="${escape(message.id)}" ${this.busy?'disabled':''}>从本轮恢复</button>`);
       if (message.error) { const error = document.createElement('p'); error.className = 'lh-message-error'; error.textContent = message.error; row.querySelector('.lh-message-text').after(error); }
+      if(message.role==='assistant')this.renderRun(row,message);
       const versions = versionsOf(this.session, message.id);
       if (versions.total > 1) actions.insertAdjacentHTML('beforeend', `<span class="lh-versions"><button data-action="version-prev" data-id="${escape(message.id)}" aria-label="上一个消息版本" ${this.busy || versions.index === 0 ? 'disabled' : ''}>‹</button><span>${versions.index + 1} / ${versions.total}</span><button data-action="version-next" data-id="${escape(message.id)}" aria-label="下一个消息版本" ${this.busy || versions.index === versions.total - 1 ? 'disabled' : ''}>›</button></span>`);
       if (message.role === 'user' && this.session.editDraft?.messageId === message.id) {
@@ -220,7 +280,7 @@ class HostWorkspace {
       }
       log.append(row);
     }
-    if (this.session.messages.length) log.scrollTop = log.scrollHeight;
+    if (this.session.messages.length) log.scrollTop = previousScroll&&!previousScroll.atBottom?previousScroll.top:log.scrollHeight;
     const selected = main.querySelector('.lh-selected-docs');
     selected.textContent = this.session.selectedDocs.length ? `已附加 ${this.session.selectedDocs.length} 份资料` : '';
     if (this.session.handoff) { const resume = document.createElement('button'); resume.dataset.action = 'preview-draft'; resume.textContent = '继续编辑交接草稿'; selected.append(resume); }
@@ -275,9 +335,8 @@ class HostWorkspace {
     const catalog = this.library?.catalog ? this.library.list() : [];
     const docBytes = this.session.selectedDocs.map(id => catalog.find(d => d.id === id)).filter(Boolean).reduce((n, d) => n + (d.bytes || new TextEncoder().encode(d.content || '').length), 0);
     const used = estimateTokens(requestMessages({ settings: this.settings, session: this.session, context: this.bridge.snapshot(this.settings.contextLimit) })) + Math.ceil(docBytes / 2) + estimateTokens([{ content: this.session.draft }]);
-    const total = used + (Number(profile.maxTokens) || 4096);
-    node.textContent = this.runPhase === 'compacting' && this.busy ? '正在压缩较早对话…' : `上下文估算 ${Math.min(100, Math.round(total / budget.capacity * 100))}% · ${Math.round(used / 1000)}k / ${Math.round(budget.capacity / 1000)}k${this.session.compactions?.length ? ' · 已压缩' : ''}`;
-    node.title = `输入估算 ${used} Token，预留回复 ${Number(profile.maxTokens) || 4096} Token；容量 ${budget.capacity}。${this.settings.autoCompact ? '接近容量时自动压缩。' : '自动压缩已关闭。'}`;
+    node.textContent = this.runPhase === 'compacting' && this.busy ? '正在压缩较早对话…' : `输入估算 ${Math.min(100, Math.round(used / budget.capacity * 100))}% · ${Math.round(used / 1000)}k / ${Math.round(budget.capacity / 1000)}k · 回复预留 ${Math.round((Number(profile.maxTokens)||4096)/1000)}k${this.session.compactions?.length ? ' · 已压缩' : ''}`;
+    node.title = `输入估算 ${used} Token，预留回复 ${Number(profile.maxTokens) || 4096} Token；有效容量 ${budget.capacity}。来源：${budget.source}。${this.settings.autoCompact ? '接近容量时自动压缩。' : '自动压缩已关闭。'}`;
   }
   renderContextBadge() {
     const node = this.root.querySelector('.lh-context-count');
@@ -285,7 +344,7 @@ class HostWorkspace {
   }
   async send(options = {}) {
     if (this.busy || !this.key || this.loadFailed) return;
-    const { retryId, editId, text: editedText } = options;
+    const { retryId, editId, text: editedText, confirmedPlan } = options;
     const profile = structuredClone(this.profile());
     if (!profile) { this.tab = 'settings'; this.render(); throw new Error('请先保存并选择主持模型。'); }
     hydrateConversation(this.session);
@@ -295,6 +354,7 @@ class HostWorkspace {
       if (!previous) throw new Error('未找到要重试的回复。');
       replyParent = previous.parentId;
     } else if (editId) {
+      await this.sessions.fork(this.key,editId);
       editUserMessage(this.session, editId, editedText);
       this.session.editDraft = null;
     } else {
@@ -302,16 +362,20 @@ class HostWorkspace {
       appendMessage(this.session, { id: crypto.randomUUID(), role: 'user', content: text, status: 'complete' }); this.session.draft = '';
     }
     const assistant = appendMessage(this.session, { id: crypto.randomUUID(), role: 'assistant', content: '', status: 'running' }, replyParent);
+    const user=this.session.conversation.nodes.find(m=>m.id===assistant.parentId),binding=this.sessions.current(this.key).binding;
+    user.gameBranchId??=binding.branchId;assistant.gameBranchId=binding.branchId;
     this.busy = true; this.error = ''; this.controller = new AbortController();
     const controller = this.controller, key = this.key, generation = ++this.generation;
     this.runningContext = contextSignature(this.bridge.context());
     this.session.pending = { messageId: assistant.id, startedAt: Date.now(), profileId: profile.id };
     const requestSession = structuredClone(this.session);
+    if(confirmedPlan)requestSession.mode='chat';
     const requestSettings = structuredClone(this.settings), requestContext = this.bridge.snapshot(this.settings.contextLimit);
     this.render();
     let lastCheckpoint = 0;
     try {
-      await this.persist();
+      await this.sessions.cache(key,this.session);
+      await this.persist().catch(()=>{});
       const documents = await Promise.all(requestSession.selectedDocs.map(id => this.library.read(id)));
       if (documents.reduce((size, doc) => size + doc.content.length, 0) > 100000) throw new Error('附加资料超过 10 万字，请减少所选资料后重试。');
       controller.signal.throwIfAborted();
@@ -324,18 +388,20 @@ class HostWorkspace {
       if (prepared.compaction) { this.session.compactions.push(prepared.compaction); await this.persist(); }
       controller.signal.throwIfAborted();
       this.runPhase = 'generating'; this.session.pending.stage = 'generating'; this.render();
-      const content = await this.model.chat(structuredClone(profile), prepared.messages, {
+      this.runtime.chatKey=key;
+      const run = await this.runtime.execute({ campaignId:binding.campaignId,branchId:binding.branchId,user,profile:structuredClone(profile),settings:requestSettings,messages:prepared.messages,planMode:requestSession.mode==='plan',confirmedPlan,
         signal: controller.signal,
+        onUpdate: state=>{if(generation!==this.generation||this.key!==key)return;assistant.runId=state.id;assistant.trace=state.trace;assistant.plan=state.plan;assistant.commit=state.commit;assistant.worldbook=state.worldbook;assistant.worldbookError=state.worldbookError;const row=this.root.querySelector(`[data-message-id="${assistant.id}"]`);if(row)this.renderRun(row,assistant);this.renderStatus();},
         onText: text => {
           if (generation !== this.generation || this.key !== key) return;
           assistant.content = text;
           const node = this.root.querySelector(`[data-message-id="${assistant.id}"] .lh-message-text`);
-          if (node) { this.markdown(node, text); const log = node.closest('.lh-messages'); if (log.scrollHeight - log.scrollTop - log.clientHeight < 180) log.scrollTop = log.scrollHeight; }
+          if (node) {const log=node.closest('.lh-messages'),top=log.scrollTop,follow=log.scrollHeight-log.scrollTop-log.clientHeight<48;this.markdown(node,text);log.scrollTop=follow?log.scrollHeight:top;}
           if (Date.now() - lastCheckpoint > 1000) { lastCheckpoint = Date.now(); this.cache(); }
         },
       });
       if (generation !== this.generation || this.key !== key) return;
-      assistant.content = content; assistant.status = 'complete';
+      assistant.content = run.output; assistant.status = 'complete';
     } catch (error) {
       if (generation !== this.generation || this.key !== key) return;
       if (error.partial) assistant.content = error.partial;
@@ -348,6 +414,17 @@ class HostWorkspace {
         await this.persist().catch(() => {}); this.render();
       }
     }
+  }
+  renderRun(row,message){
+    if(!message.trace?.length&&!message.plan)return;
+    const log=row.closest('.lh-messages'),scroll=log?.scrollTop,pinned=log&&log.scrollHeight-log.scrollTop-log.clientHeight<48;
+    let box=row.querySelector('.lh-run');if(!box){box=document.createElement('section');box.className='lh-run';box.append(Object.assign(document.createElement('div'),{className:'lh-plan-slot'}),Object.assign(document.createElement('div'),{className:'lh-activity'}),Object.assign(document.createElement('p'),{className:'lh-worldbook-warning lh-message-error'}));row.querySelector('.lh-message-text').before(box);}
+    const viewKey=`${this.key}:${message.id}`;if(!this.activityViews.has(viewKey))this.activityViews.set(viewKey,{open:new Map()});
+    const planSlot=box.querySelector('.lh-plan-slot');
+    const signature=JSON.stringify([message.plan,!!this.busy]);if(planSlot.dataset.signature!==signature){planSlot.dataset.signature=signature;planSlot.innerHTML='';if(message.plan){const plan=message.plan,role={host:'主持',analysis:'分析',judgment:'判定',intelligence:'情报',character:'角色'};planSlot.innerHTML=`<div class="lh-plan-card"><strong>${escape(plan.goal)}</strong><ol>${plan.steps.map(s=>`<li><b>${escape(role[s.agent]||s.agent)}</b> · ${escape(s.task)}<small>依赖：${escape(s.dependencies.join(', ')||'无')}</small></li>`).join('')}</ol><p>${escape({pending:'等待确认，尚未改变游戏状态',executing:'正在执行',executed:'计划已执行',cancelled:'已取消'}[plan.status]||'计划')}</p>${plan.status==='pending'?`<div class="lh-buttons"><button data-action="plan-execute" data-id="${message.id}" class="lh-primary" ${this.busy?'disabled':''}>执行计划</button><button data-action="plan-modify" data-id="${message.id}">修改</button><button data-action="plan-cancel" data-id="${message.id}">取消</button></div>`:''}</div>`;}}
+    renderActivity(box.querySelector('.lh-activity'),message,{state:this.activityViews.get(viewKey),markdown:(node,text)=>this.markdown(node,text)});
+    const warning=box.querySelector('.lh-worldbook-warning');warning.hidden=!message.worldbookError;warning.textContent=message.worldbookError?`结算已保留，世界书待同步：${message.worldbookError}`:'';
+    if(log)log.scrollTop=pinned&&this.activityViews.get(viewKey).follow!==false?log.scrollHeight:scroll;
   }
   stop(reason) {
     if (!this.busy) return;
@@ -385,11 +462,12 @@ class HostWorkspace {
       <label class="lh-wide">接口地址<input data-profile="baseUrl" type="url" placeholder="https://你的接口地址/v1" value="${escape(p.baseUrl)}" autocomplete="off"></label>
       <label class="lh-wide">API Key<input data-profile="apiKey" type="password" value="${escape(p.apiKey)}" autocomplete="new-password" spellcheck="false"></label>
       <label class="lh-wide">模型<input data-profile="model" list="lh-models" value="${escape(p.model)}" placeholder="选择或手动填写模型名"><datalist id="lh-models">${this.models.map(model => `<option value="${escape(model)}"></option>`).join('')}</datalist></label>
-      <label>最大回复 Token<input data-profile="maxTokens" type="number" min="1" max="128000" value="${escape(p.maxTokens)}"></label><label>温度<input data-profile="temperature" type="number" min="0" max="2" step="0.1" value="${escape(p.temperature)}"></label><label class="lh-wide">模型上下文容量 Token<input data-profile="contextWindow" type="number" min="4096" max="2000000" value="${escape(p.contextWindow || 128000)}"></label></div>
+      <label>最大回复 Token<input data-profile="maxTokens" type="number" min="1" max="128000" value="${escape(p.maxTokens)}"></label><label>温度<input data-profile="temperature" type="number" min="0" max="2" step="0.1" value="${escape(p.temperature)}"></label><label>容量来源<select data-profile="capacityMode"><option value="auto">按模型自动映射</option><option value="manual">手动覆盖</option></select></label><label>手动容量 Token<input data-profile="contextWindow" type="number" min="4096" max="2000000" value="${escape(p.contextWindow || modelCapacity(p).effective)}"></label><p class="lh-wide lh-capacity-source">${escape(modelCapacity(p).source)} · 有效窗口 ${modelCapacity(p).effective.toLocaleString()}</p></div>
       <div class="lh-buttons"><button data-action="models" ${this.modelConnecting ? 'disabled' : ''}>${this.modelConnecting ? '正在连接…' : '连接并获取模型'}</button><button data-action="profile-save" class="lh-primary">保存并使用</button>${this.settings.profiles.some(item => item.id === p.id) ? '<button data-action="profile-delete" class="lh-danger">删除连接</button>' : ''}</div><p class="lh-feedback" role="status">${escape(this.modelFeedback || '')}</p>
       <hr><h2>主持提示词</h2><label class="lh-field"><textarea id="lh-prompt" rows="7" aria-label="主持系统提示词">${escape(this.promptDraft)}</textarea></label><label class="lh-field">读取最近的酒馆消息数量<input id="lh-context-limit" type="number" min="1" max="200" value="${this.contextLimitDraft ?? this.settings.contextLimit}"></label><label class="lh-auto-compact"><input id="lh-auto-compact" type="checkbox" ${(this.autoCompactDraft ?? this.settings.autoCompact) ? 'checked' : ''}>接近上下文容量时自动压缩较早主持对话</label><button data-action="prompt-save" class="lh-primary">保存提示词与上下文设置</button></div>`;
     main.querySelector('[data-profile="protocol"]').value = p.protocol;
-    for (const input of main.querySelectorAll('[data-profile]')) input.oninput = () => { p[input.dataset.profile] = input.value; this.profileDrafts.set(p.id, structuredClone(p)); this.settingsDirty = true; };
+    main.querySelector('[data-profile="capacityMode"]').value=p.capacityMode||modelCapacity(p).mode;
+    for (const input of main.querySelectorAll('[data-profile]')) input.oninput = () => { p[input.dataset.profile] = input.value;if(input.dataset.profile==='model')p.providerContextWindow=this.modelMetadata?.[input.value]?.contextWindow||null; this.profileDrafts.set(p.id, structuredClone(p)); this.settingsDirty = true;const capacity=main.querySelector('.lh-capacity-source');if(capacity)capacity.textContent=`${modelCapacity(p).source} · 有效窗口 ${modelCapacity(p).effective.toLocaleString()}`; };
     main.querySelector('#lh-prompt').oninput = event => { this.promptDraft = event.target.value; this.promptDirty = true; this.settingsDirty = true; };
     main.querySelector('#lh-context-limit').oninput = event => { this.contextLimitDraft = event.target.value; this.promptDirty = true; this.settingsDirty = true; };
     main.querySelector('#lh-auto-compact').onchange = event => { this.autoCompactDraft = event.target.checked; this.promptDirty = true; this.settingsDirty = true; };
@@ -398,6 +476,11 @@ class HostWorkspace {
     main.querySelector('.lh-settings').append(commands);
     for (const input of commands.querySelectorAll('[data-command-enable]')) input.onchange = () => { if (input.checked) this.disabledCommandDrafts.delete(input.dataset.commandEnable); else this.disabledCommandDrafts.add(input.dataset.commandEnable); this.commandsDirty = true; this.settingsDirty = true; };
     for (const input of commands.querySelectorAll('[data-command-field]')) input.oninput = () => { this.commandDrafts[Number(input.closest('[data-index]').dataset.index)][input.dataset.commandField] = input.value; this.commandsDirty = true; this.settingsDirty = true; };
+    const agents=document.createElement('section');
+    const agentLabels={host:'主持',judgment:'判定',analysis:'分析',intelligence:'情报',character:'角色'};
+    agents.innerHTML=`<hr><h2>Agent 提示词</h2><div class="lh-agent-prompt-grid">${Object.entries(AGENT_PROMPTS).map(([role,prompt])=>`<label class="lh-agent-prompt-field"><span>${agentLabels[role]||role}</span><textarea data-agent-prompt="${role}" aria-label="${agentLabels[role]||role} Agent 提示词" rows="8">${escape(this.agentPromptDrafts[role]||prompt)}</textarea></label>`).join('')}</div><button data-action="agents-save" class="lh-primary">保存 Agent 提示词</button><hr><h2>版本与更新</h2><p class="lh-installed-version">当前 ${VERSION}</p><div class="lh-buttons"><button data-action="update-check">检查更新</button><a href="${REPOSITORY}/releases" target="_blank" rel="noopener noreferrer">发布说明</a><button data-action="update-install" hidden>安装 stable 更新</button></div><p class="lh-update-status"></p>`;main.querySelector('.lh-settings').append(agents);
+    this.renderUpdateStatus();
+    for(const field of agents.querySelectorAll('[data-agent-prompt]'))field.oninput=()=>{this.agentPromptDrafts[field.dataset.agentPrompt]=field.value;this.agentPromptsDirty=true;this.settingsDirty=true;};
   }
   async renderDocuments() {
     const main = this.root.querySelector('.lh-main');
@@ -452,27 +535,37 @@ class HostWorkspace {
     this.root.querySelector('.lh-panel').append(modal); modal.querySelector('textarea').focus();
   }
   toast(message) { this.error = message; this.renderAlert(); }
-  download() {
-    const blob = new Blob([JSON.stringify({ format: 'lantern-host-session', chat: this.key, session: this.session }, null, 2)], { type: 'application/json' });
+  async download() {
+    const binding=this.sessions.current(this.key).binding,branch=await this.sessions.db.get(binding.campaignId,binding.branchId),records=[];
+    for(const store of ['rolls','events','plans','runs','turns','snapshots'])records.push({store,values:await this.storage.list(store,`${branchKey(binding.campaignId,binding.branchId)}:`)});
+    const blob = new Blob([JSON.stringify({ format: 'lantern-full-export-v2', chat: this.key, campaign:await this.storage.read('campaigns',binding.campaignId),branch:{...branch,session:this.session},records }, null, 2)], { type: 'application/json' });
     const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = '灯火之外-主持记录.json'; link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 1000);
   }
   async action(action, button) {
-    if (action === 'retry-save') { await this.persist(); return; }
-    if (action === 'export') { this.download(); return; }
+    if (action === 'retry-save') {const b=this.sessions.current(this.key).binding;await this.projection.sync(b.campaignId,b.branchId,this.key);for(const m of this.session.conversation.nodes)m.worldbookError=null;await this.persist();this.render();return; }
+    if (action === 'export') { await this.download(); return; }
+    if(action==='archives'){const b=this.sessions.current(this.key).binding,turns=await this.storage.list('turns',`${branchKey(b.campaignId,b.branchId)}:`);this.showPreview(turns.sort((a,b)=>a.at-b.at).map(t=>`【${new Date(t.at).toLocaleString()} · ${t.id}】\n原话：${t.input}\n状态版本：${t.worldRevision}\n结果：${t.output}\n下一停点：${t.nextStop}\n世界书版本：${t.worldbook?.revision??'尚无补充'}`).join('\n\n')||'本局尚无完成的回合。',true);this.root.querySelector('.lh-modal h2').textContent='本局每轮存档';return;}
+    if(action==='restore-round'){if(this.busy)return;const m=this.session.messages.find(m=>m.id===button.dataset.id),r=this.sessions.current(this.key),next=await this.sessions.db.fork(r.binding.campaignId,m.gameBranchId||r.binding.branchId,m.parentId,{after:true});r.binding={...r.binding,branchId:next.branchId,backup:null};m.gameBranchId=next.branchId;this.session.conversation.selected[m.id]=null;hydrateConversation(this.session);await this.storage.write('bindings',this.key,r.binding);await this.projection.sync(r.binding.campaignId,r.binding.branchId,this.key);await this.persist();this.render();return;}
+    if(action==='agents-save'){const next=normalizeSettings({...this.settings,agentPrompts:structuredClone(this.agentPromptDrafts),agentPromptVersion:2});await this.bridge.saveSettings(next);this.settings=next;this.agentPromptDrafts=structuredClone(next.agentPrompts);this.agentPromptsDirty=false;this.settingsDirty=!!(this.promptDirty||this.commandsDirty||this.profileDrafts.size);this.toast('Agent 提示词已保存');return;}
+    if(action==='update-check'){button.disabled=true;try{await this.checkUpdates(true);}finally{button.disabled=false;}return;}
+    if(action==='update-install'){if(this.busy)throw new Error('请先停止当前运行，保存断点后再更新。');if(this.settingsDirty)throw new Error('页面还有未保存的设置，请保存后再更新。');if(this.updateInstalling)return;this.updateInstalling=true;this.renderUpdateStatus();try{await this.persist();const installed=await this.updater.install();this.toast(`已安装 ${installed.version}，刷新酒馆后加载更新。`);}finally{this.updateInstalling=false;this.renderUpdateStatus();}return;}
+    if(action==='plan-execute'){const m=this.session.messages.find(m=>m.id===button.dataset.id);validatePlan(m?.plan);return this.send({retryId:m.id,confirmedPlan:m.plan});}
+    if(action==='plan-cancel'){const m=this.session.messages.find(m=>m.id===button.dataset.id);if(!m?.plan)return;m.plan.status='cancelled';const binding=this.sessions.current(this.key).binding,run=await this.storage.read('runs',`${branchKey(binding.campaignId,binding.branchId)}:${m.runId}`);if(run){run.plan.status='cancelled';run.status='cancelled';await this.storage.write('runs',`${branchKey(binding.campaignId,binding.branchId)}:${m.runId}`,run);}await this.persist();this.render();return;}
+    if(action==='plan-modify'){const m=this.session.messages.find(m=>m.id===button.dataset.id);this.session.draft=`修改计划：${m?.plan?.goal||''}\n调整要求：`;this.session.mode='plan';this.saveSoon();this.render();this.root.querySelector('#lh-input')?.focus();return;}
     if (action === 'command-insert') { this.session.draft = `/${button.dataset.name} `; this.saveSoon(); const input = this.root.querySelector('#lh-input'); input.value = this.session.draft; this.renderCommandMenu(); input.focus(); return; }
     if (action === 'command-new') { this.commandDrafts.push({ name: '', description: '', template: '' }); this.commandsDirty = true; this.settingsDirty = true; this.render(); return; }
     if (action === 'command-delete') { this.commandDrafts.splice(Number(button.dataset.index), 1); this.commandsDirty = true; this.settingsDirty = true; this.render(); return; }
     if (action === 'commands-save') {
       const next = { ...structuredClone(this.settings), customCommands: validateCommands(this.commandDrafts), disabledCommands: [...this.disabledCommandDrafts] };
       await this.bridge.saveSettings(next); this.settings = normalizeSettings(next); this.commandDrafts = structuredClone(next.customCommands); this.commandsDirty = false;
-      this.settingsDirty = this.promptDirty || this.profileDrafts.size > 0; this.toast('指令设置已保存'); return;
+      this.settingsDirty = this.promptDirty || this.agentPromptsDirty || this.profileDrafts.size > 0; this.toast('指令设置已保存'); return;
     }
     if (action === 'profile-new') { this.profileDraft = { id: crypto.randomUUID(), name: '新连接', protocol: 'openai', baseUrl: '', apiKey: '', model: '', maxTokens: 4096, temperature: 0.7 }; this.models = []; this.render(); }
     if (action === 'profile-select') { this.profileDraft = structuredClone(this.profileDrafts.get(button.dataset.id) || this.settings.profiles.find(p => p.id === button.dataset.id)); this.models = []; this.modelFeedback = ''; this.render(); }
     if (action === 'models') {
       this.modelConnecting = true; this.modelFeedback = ''; this.render();
       const id = this.profileDraft.id;
-      try { const result = await this.model.resolve(structuredClone(this.profileDraft), AbortSignal.timeout(60000), true); if (this.profileDraft.id === id) { this.models = result.models; this.profileDraft.baseUrl = result.baseUrl; this.profileDrafts.set(id, structuredClone(this.profileDraft)); this.settingsDirty = true; this.modelFeedback = `连接成功，找到 ${result.models.length} 个模型，请选择后保存。`; } }
+      try { const result = await this.model.resolve(structuredClone(this.profileDraft), AbortSignal.timeout(60000), true); if (this.profileDraft.id === id) { this.models = result.models;this.modelMetadata=result.metadata; this.profileDraft.baseUrl = result.baseUrl; this.profileDrafts.set(id, structuredClone(this.profileDraft)); this.settingsDirty = true; this.modelFeedback = `连接成功，找到 ${result.models.length} 个模型，请选择后保存。`; } }
       finally { this.modelConnecting = false; this.render(); }
     }
     if (action === 'profile-save' || action === 'profile-delete' || action === 'prompt-save') {
@@ -483,7 +576,8 @@ class HostWorkspace {
         connectionPayload(profile);
         if (!(Number(profile.maxTokens) > 0 && Number(profile.maxTokens) <= 128000)) throw new Error('最大回复 Token 应为 1—128000。');
         if (!(Number(profile.temperature) >= 0 && Number(profile.temperature) <= 2)) throw new Error('温度应为 0—2。');
-        profile.contextWindow = Number(profile.contextWindow) || 128000;
+        profile.capacityMode=this.root.querySelector('[data-profile="capacityMode"]').value;
+        profile.contextWindow = Number(profile.contextWindow) || modelCapacity(profile).effective;
         if (!Number.isInteger(profile.contextWindow) || profile.contextWindow < 4096 || profile.contextWindow > 2000000) throw new Error('模型上下文容量应为 4096—2000000 Token。');
         if (contextBudget(profile).inputLimit < 512) throw new Error('请为输入上下文预留空间：降低最大回复 Token，或提高模型上下文容量。');
         next.profiles = next.profiles.filter(p => p.id !== profile.id); next.profiles.push(profile); next.activeProfileId = profile.id;
@@ -495,7 +589,7 @@ class HostWorkspace {
         await this.bridge.saveSettings(next); this.settings = normalizeSettings(next);
         if (action === 'prompt-save') this.promptDirty = false;
         else this.profileDrafts.delete(this.profileDraft.id);
-        this.settingsDirty = this.promptDirty || this.commandsDirty || this.profileDrafts.size > 0;
+        this.settingsDirty = this.promptDirty || this.commandsDirty || this.agentPromptsDirty || this.profileDrafts.size > 0;
         this.modelFeedback = '已保存'; if (action === 'profile-delete') this.profileDraft = null; this.render();
       }
       finally { button.disabled = false; }
@@ -506,13 +600,13 @@ class HostWorkspace {
     }
     if (action === 'edit-message') { if (this.busy) return; this.session.editDraft = { messageId: button.dataset.id, text: this.session.messages.find(m => m.id === button.dataset.id)?.content || '' }; this.saveSoon(); this.render(); this.root.querySelector('.lh-inline-editor textarea')?.focus(); }
     if (action === 'edit-cancel') { this.session.editDraft = null; this.saveSoon(); this.render(); }
-    if (action === 'version-prev' || action === 'version-next') { if (this.busy) return; switchVersion(this.session, button.dataset.id, action === 'version-prev' ? -1 : 1); this.saveSoon(); this.render(); }
+    if (action === 'version-prev' || action === 'version-next') { if (this.busy) return; switchVersion(this.session, button.dataset.id, action === 'version-prev' ? -1 : 1);this.render();const selected=[...this.session.messages].reverse().find(m=>m.gameBranchId);if(selected){const r=this.sessions.current(this.key);r.binding.branchId=selected.gameBranchId;await this.storage.write('bindings',this.key,r.binding);await this.projection.sync(r.binding.campaignId,r.binding.branchId,this.key).catch(error=>{this.saveError=error.message;});}this.saveSoon();this.render(); }
     if (action === 'retry') await this.send({ retryId: button.dataset.id });
     if (action === 'compact') await this.compactNow();
-    if (action === 'preview') this.showPreview(this.session.messages.find(m => m.id === button.dataset.id)?.content || '');
+    if (action === 'preview') {const m=this.session.messages.find(m => m.id === button.dataset.id);if(m.id!==this.session.messages.at(-1)?.id)throw new Error('后面已有新的回合，请先从本轮恢复，避免把后续情报注入这次正文。');if(m.worldbookError)throw new Error('该轮情报世界书尚未同步，请先重试保存。');this.showPreview(handoffPackage(this.session,m));}
     if (action === 'preview-draft') this.showPreview(this.session.handoff);
     if (action === 'preview-close') this.root.querySelector('.lh-modal')?.remove();
-    if (action === 'handoff') { const key = this.key, text = this.session.handoff; await this.persist(); if (key !== this.bridge.key()) throw new Error('聊天已切换，请回到原聊天确认。'); this.bridge.fill(text, button.dataset.mode); this.root.querySelector('.lh-modal')?.remove(); this.close(true); }
+    if (action === 'handoff') { const key = this.key, text = this.session.handoff,r=this.sessions.current(key).binding;await this.projection.sync(r.campaignId,r.branchId,key);await this.persist(); if (key !== this.bridge.key()) throw new Error('聊天已切换，请回到原聊天确认。'); this.bridge.fill(text, button.dataset.mode); this.root.querySelector('.lh-modal')?.remove(); this.close(true); }
     if (action === 'doc-open') await this.openDoc(button.dataset.id);
     if (action === 'doc-back') this.root.querySelector('.lh-documents')?.classList.remove('lh-doc-reading');
     if (action === 'doc-source') { this.docSource = !this.docSource; await this.openDoc(this.selectedDoc); }
@@ -538,7 +632,7 @@ export async function enable() {
     const store = new LocalStore(bridge.account); await store.ready;
     const app = new HostWorkspace(bridge, store); application = app;
     try { await app.init(); } catch (error) { app.destroy(); application = null; throw error; }
-    globalThis.LanternHost = Object.freeze({ open: () => app.open(), close: () => app.close(), getStatus: () => ({ chatBound: Boolean(app.key), busy: app.busy, saveError: Boolean(app.saveError), version: '0.2.0' }) });
+    globalThis.LanternHost = Object.freeze({ open: () => app.open(), close: () => app.close(), getStatus: () => ({ chatBound: Boolean(app.key), busy: app.busy, saveError: Boolean(app.saveError), version: VERSION }) });
     return app;
   })().finally(() => { initializing = null; });
   return initializing;

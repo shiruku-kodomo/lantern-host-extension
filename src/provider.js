@@ -88,6 +88,56 @@ export class ModelClient {
     const result = await this.resolve(profile, signal, true);
     return result.models;
   }
+  async turn(profile, messages, { signal, tools = [], onText, onSummary, onUsage } = {}) {
+    if (!profile.model?.trim()) throw new Error('请先配置主持模型。');
+    const resolved = await this.resolve(profile, signal);
+    const payload = { ...connectionPayload({ ...profile, baseUrl: resolved.baseUrl }), model: profile.model.trim(), messages,
+      stream: true, max_tokens: Number(profile.maxTokens) || 4096, temperature: Number(profile.temperature ?? 0.7),
+      ...(tools.length ? { tools, tool_choice: 'auto' } : {}), ...(profile.protocol !== 'openai' ? { use_sysprompt: true } : {}) };
+    const wire = await inspectWire(await this.post('/api/backends/chat-completions/generate', payload, signal), signal);
+    const result = { text: '', summary: '', tools: [], usage: null, finishReason: '' }, calls = new Map();
+    let completed = false;
+    const call = (index, value, full = false) => {
+      const old = calls.get(index) || { id: value.id || `call_${crypto.randomUUID().replaceAll('-','')}`, type: 'function', function: { name: '', arguments: '' } };
+      if (value.id) old.id = value.id;
+      if (value.function?.name) old.function.name = full ? value.function.name : old.function.name + value.function.name;
+      if (value.function?.arguments) old.function.arguments = full ? value.function.arguments : old.function.arguments + value.function.arguments;
+      calls.set(index, old);
+    };
+    const event = data => {
+      const error = upstreamError(data); if (error) throw new Error(error);
+      if (data.usage || data.usageMetadata || data.message?.usage) { result.usage = { ...result.usage, ...(data.usage || data.usageMetadata || data.message.usage) }; onUsage?.(result.usage); }
+      const choice = data.choices?.[0], message = choice?.message, delta = choice?.delta;
+      let text = delta?.content || message?.content || '';
+      for (const t of delta?.tool_calls || []) call(t.index ?? 0, t);
+      (message?.tool_calls || []).forEach((t,i)=>call(i,t,true));
+      if (data.type === 'content_block_start') {
+        const b=data.content_block;
+        if(b?.type==='tool_use') call(data.index,{id:b.id,function:{name:b.name,arguments:Object.keys(b.input||{}).length?JSON.stringify(b.input):''}},true);
+        if(b?.type==='text')text+=b.text||'';
+      }
+      if(data.delta?.type==='text_delta')text+=data.delta.text||'';
+      if(data.delta?.type==='input_json_delta')call(data.index,{function:{arguments:data.delta.partial_json||''}});
+      if(Array.isArray(data.content))data.content.forEach((b,i)=>{if(b.type==='text')text+=b.text||'';if(b.type==='tool_use')call(i,{id:b.id,function:{name:b.name,arguments:JSON.stringify(b.input)}},true);});
+      for(const [i,p]of (data.candidates?.[0]?.content?.parts||[]).entries()) {
+        if(p.text&&!p.thought)text+=p.text;
+        if(p.functionCall)call(i,{id:p.functionCall.id,function:{name:p.functionCall.name,arguments:JSON.stringify(p.functionCall.args||{})}},true);
+      }
+      // Only explicitly exposed reasoning summaries are displayed; hidden reasoning is not synthesized.
+      const summary=delta?.reasoning_summary || data.reasoning_summary || (data.type==='response.reasoning_summary_text.delta'?data.delta:'');
+      if(typeof summary==='string'&&summary){result.summary+=summary;onSummary?.(result.summary);}
+      if(text){result.text+=text;onText?.(result.text);}
+      const reason=choice?.finish_reason||data.delta?.stop_reason||data.stop_reason||data.candidates?.[0]?.finishReason;
+      if(reason){result.finishReason=reason;completed=true;if(['length','MAX_TOKENS','max_tokens'].includes(reason))throw new Error('达到回复上限，本步骤未完成，可重试继续。');}
+      if(data.type==='message_stop')completed=true;
+    };
+    try { if(wire.json){event(await wire.response.json());completed=true;}else await readSse(wire.response,event,signal,()=>{completed=true;}); }
+    catch(error){error.partial=result.text;throw error;}
+    signal?.throwIfAborted();result.tools=[...calls.values()];
+    if(!completed)throw Object.assign(new Error('模型连接在步骤结束前中断，检查点已保留。'),{partial:result.text});
+    if(!result.text.trim()&&!result.tools.length)throw new Error('模型未返回正文或工具调用。');
+    return result;
+  }
   async resolve(profile, signal, strict = false) {
     const payload = connectionPayload(profile), base = payload.reverse_proxy;
     const identity = JSON.stringify([profile.protocol, base, profile.apiKey || '']);
@@ -99,7 +149,8 @@ export class ModelClient {
       try {
         const response = await this.post('/api/backends/chat-completions/status', { ...payload, reverse_proxy: candidate }, signal);
         const data = await response.json(); const error = upstreamError(data); if (error) throw new Error(error);
-        const result = { baseUrl: candidate, models: extractModels(data) };
+        const result = { baseUrl: candidate, models: extractModels(data), metadata: {} };
+        for(const m of (Array.isArray(data)?data:data.data||data.models||[]))if(typeof m==='object'){const id=m.id||m.name?.replace(/^models\//,'');const limit=Number(m.context_length||m.context_window||m.inputTokenLimit);if(id&&limit>0)result.metadata[id]={contextWindow:limit,source:'接口 /models 元数据'};}
         if (!result.models.length) throw new Error('没有找到可用模型。');
         this.resolutions.set(identity, result);
         return result;

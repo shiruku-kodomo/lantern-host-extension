@@ -33,7 +33,7 @@ export class DocumentLibrary {
     // Fetch each shard once; the source file is the authority, not a model summary.
     for (const record of this.list()) {
       signal?.throwIfAborted();
-      const title = `${record.path} ${record.title}`.toLowerCase();
+      const title = `${record.path} ${record.title} ${(record.aliases||[]).join(' ')} ${record.entityId||''}`.toLowerCase();
       if (words.every(w => title.includes(w))) { results.push(record); continue; }
       const doc = await this.read(record.id);
       const haystack = `${title}\n${doc.content}`.toLowerCase();

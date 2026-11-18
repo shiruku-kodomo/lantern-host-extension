@@ -16,6 +16,10 @@ const upstream = createServer(async (req, res) => {
   const body = JSON.parse(raw || '{}'); requests.push(body);
   if (mode === 'error') { res.writeHead(503, { 'Content-Type': 'application/json' }); res.end('{"error":{"message":"QA temporary unavailable"}}'); return; }
   res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+  if(body.tools?.some(t=>t.function.name==='propose_plan')&&!body.messages?.some(m=>m.role==='tool'&&m.content.includes('等待玩家点击执行'))){
+    const plan={goal:'验收计划',steps:[{id:'step-1',agent:'analysis',task:'读取本局资料',dependencies:[],tools:['read_state']}]};
+    res.end(`data: ${JSON.stringify({choices:[{delta:{tool_calls:[{index:0,id:'qa-plan',type:'function',function:{name:'propose_plan',arguments:JSON.stringify(plan)}}]},finish_reason:'tool_calls'}]})}\n\ndata: [DONE]\n\n`);return;
+  }
   const reply = ['主持回复：已读取本轮讨论。', '', '## 本轮结果', '', '**重点**与引用：', '', '> 保留原始记录。', '', '| 项目 | 数值 |', '| --- | --- |', '| 示例 | 17 |', '', '```js', 'const result = 17;', '```', '', '<script>window.__lhUnsafe = true</script>'].join('\n');
   res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: reply }, index: 0 }] })}\n\n`);
   const timer = setTimeout(() => { res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop', index: 0 }] })}\n\ndata: [DONE]\n\n`); res.end(); }, mode === 'slow' ? 15000 : 150);
@@ -197,13 +201,13 @@ try {
   });
   await check('automatic context compaction retains history and actually sends a summary', async () => {
     await host.locator('.lh-nav [data-tab=settings]').click();
-    await host.locator('[data-profile=contextWindow]').fill('4096'); await host.locator('[data-profile=maxTokens]').fill('256');
+    await host.locator('[data-profile=capacityMode]').selectOption('manual');await host.locator('[data-profile=contextWindow]').fill('32768'); await host.locator('[data-profile=maxTokens]').fill('256');
     await host.locator('[data-action=profile-save]').click(); await host.locator('.lh-feedback').filter({ hasText: '已保存' }).waitFor();
     await host.locator('[data-tab=chat]').click();
     await page.evaluate(async () => {
       const app = await (await import('/scripts/extensions/third-party/lantern-host-extension/index.js')).enable();
       const { appendMessage } = await import('/scripts/extensions/third-party/lantern-host-extension/src/conversation.js');
-      for (let n = 0; n < 20; n++) appendMessage(app.session, { id: crypto.randomUUID(), role: n % 2 ? 'assistant' : 'user', content: `${n}: ${'past-fact '.repeat(120)}`, status: 'complete' });
+      for (let n = 0; n < 20; n++) appendMessage(app.session, { id: crypto.randomUUID(), role: n % 2 ? 'assistant' : 'user', content: `${n}: ${'past-fact '.repeat(280)}`, status: 'complete' });
       await app.persist(); app.render();
     });
     const before = requests.length;
