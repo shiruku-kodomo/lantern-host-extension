@@ -1,12 +1,6 @@
 import {applyRunOperation} from './opening.js';
 import {ordinary} from './exact.js';
 
-export function simpleInquiry(text){
-  return /调查|询问|交谈|核实/.test(text)&&/只推进这一项|仅.*一次|先.*(?:询问|交谈)/.test(text)&&!/战斗|攻击|面板|数值|提示词|设置/.test(text);
-}
-export function explicitRandomRequest(text){
-  return String(text).split(/[。！？\n]/).some(part=>/(?:突发|随机)事件/.test(part)&&/抽|触发|来一|来个|生成|实际|现在|请求/.test(part)&&!/(?:不要|不用|不需|禁止|取消|别).{0,12}(?:突发|随机)事件|解释|设置|为什么|如何|规则是什么|机制是什么/.test(part));
-}
 export async function executeInquiry(run,engine,args,input,checkpoint=async()=>{}){
   if(run.inquiry?.completed)return {...run.inquiry,reused:true};
   if(!args.purpose?.trim()||!args.actors?.length||!args.subjectId||!args.success?.trim()||!args.failure?.trim())throw new Error('询问需预先明确行动、参与者、对象与成败分支。');

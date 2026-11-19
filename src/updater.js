@@ -1,4 +1,4 @@
-export const VERSION='0.3.4';
+export const VERSION='0.3.5';
 export const REPOSITORY='https://github.com/shiruku-kodomo/lantern-host-extension';
 const OFFICIAL='github.com/shiruku-kodomo/lantern-host-extension';
 export function officialRemote(remote){

@@ -12,7 +12,6 @@ import {ExtensionUpdater,REPOSITORY,officialRemote} from '../src/updater.js';
 import {MechanismEngine} from '../src/mechanisms.js';
 import {characterContext} from '../src/mechanisms.js';
 import {ContentRegistry,ruleClosure} from '../src/rules.js';
-import {explicitRandomRequest} from '../src/actions.js';
 import {projectKnowledge} from '../src/worldbook.js';
 
 test('legacy prompt append/replace migrates once and the saved editor text is exactly the runtime role prompt',()=>{
@@ -31,12 +30,9 @@ test('plan tools exclude character creation, opening batches, dice and all state
     for(const forbidden of ['ensure_entity','prepare_opening','execute_inquiry','execute_combat_block','roll_dice','mechanism'])assert.ok(!names.includes(forbidden),`${role} exposes ${forbidden}`);
   }
 });
-test('random event consent excludes rule questions and explicit opt-outs',()=>{
-  assert.equal(explicitRandomRequest('现在请实际抽取一次突发事件。'),true);
-  assert.equal(explicitRandomRequest('按规则来个随机事件。'),true);
-  assert.equal(explicitRandomRequest('解释一下如何触发突发事件的规则。'),false);
-  assert.equal(explicitRandomRequest('现在不要触发突发事件。'),false);
-  assert.equal(explicitRandomRequest('与工作人员交谈调查。'),false);
+test('all roles share registered mechanisms and dice',()=>{
+  const host=agentTools('host').find(t=>t.function.name==='mechanism').function.parameters.properties.type.enum;
+  for(const role of Object.keys(AGENT_PROMPTS)){const tools=agentTools(role);assert.deepEqual(tools.find(t=>t.function.name==='mechanism').function.parameters.properties.type.enum,host);assert.ok(tools.some(t=>t.function.name==='roll_dice'));}
 });
 test('changing a model-supplied turn label cannot roll a second random event in the same player turn',async()=>{
   const call=(id,turnId)=>({id,type:'function',function:{name:'mechanism',arguments:JSON.stringify({id,type:'random.event',args:{turnId,explicitRequest:true,affected:[]}})}});
@@ -62,7 +58,7 @@ async function openingFixture(sequence){
 test('real bundled Xiaofei opens in two model turns: fixed NPC, player panel, known facts and three unaccepted tasks; replay does not reroll',async()=>{
   const f=await openingFixture([tool({player,quests}),{text:'已保存，等待玩家选择。',tools:[]}]);
   const run=await f.runtime.execute(f.options),w=(await f.db.get('c','b')).world;
-  assert.equal(run.status,'complete');assert.deepEqual(f.requests.map(r=>r.tools),[['prepare_opening'],[]]);
+  assert.equal(run.status,'complete');assert.ok(f.requests.every(r=>['prepare_opening','mechanism','roll_dice'].every(name=>r.tools.includes(name))));
   const role=Object.values(w.entities).find(e=>e.name==='月晓菲');
   assert.equal(role.kind,'character');assert.deepEqual(role.forms.normal,{hp:150,mp:30,attack:20,defense:15,speed:5});
   assert.ok(role.affection>=71&&role.affection<=90);assert.match(role.personality,/傲慢/);assert.equal(role.location,'深圳');
@@ -116,18 +112,18 @@ test('quest board validates all hidden facts before rolling its first die',async
   await assert.rejects(engine.execute(world,{id:'board',type:'quest.board',args:{questIds:['0','1','2']}}),/投骰前/);
   assert.equal((await f.store.list('rolls')).length,0);
 });
-test('specialist receives its task, not narrator style/history; delegated dice reach the host and cannot be rerolled by the host',async()=>{
+test('specialist context stays separate; host retains independent dice tools after delegation',async()=>{
   const call=(id,name,args)=>({text:'',tools:[{id,type:'function',function:{name,arguments:JSON.stringify(args)}}]});
   const check={id:'inquiry',purpose:'当前单一询问行动',sides:20,count:1,modifiers:[]};
   const sequence=[call('d','delegate',{role:'judgment',task:'为本轮唯一询问投骰'}),call('r','roll_dice',check),{text:'判定已完成。',tools:[]},call('r2','roll_dice',{...check,id:'different-id'}),{text:'复用判定结果。',tools:[]}];
   const f=await openingFixture(sequence);
   const run=await f.runtime.execute({...f.options,user:{id:'check-only',content:'进行一次询问判定'},messages:[{role:'user',content:'OLD_NARRATOR_STYLE 40%内心独白与第一人称长文'}]});
-  assert.equal((await f.store.list('rolls')).length,1);
+  assert.equal((await f.store.list('rolls')).length,2);
   assert.equal(JSON.stringify(f.requests[1].messages).includes('OLD_NARRATOR_STYLE'),false);
-  assert.equal(f.requests[3].tools.includes('roll_dice'),false);
+  assert.equal(f.requests[3].tools.includes('roll_dice'),true);
   const delegated=run.trace.find(t=>t.tool==='delegate'&&t.status==='complete').result;
   assert.equal(delegated.checks.length,1);assert.ok(delegated.checks[0].raw.length);
-  assert.ok(run.trace.some(t=>t.tool==='roll_dice'&&t.status==='failed'));
+  assert.ok(!run.trace.some(t=>t.tool==='roll_dice'&&t.status==='failed'));
 });
 test('model rules query returns only requested originals while engine validation still loads the dependency closure',async()=>{
   const f=await openingFixture([]),registry=new ContentRegistry(f.runtime.library);
@@ -141,7 +137,7 @@ test('single inquiry is declared once, rolls once, records only its participants
   await f.db.commit('c','b',{id:'seed',baseRevision:0,world,operations:[],source:{}});
   const options={...f.options,user:{id:'inquiry',content:'先与工作人员交谈核实，只推进这一项调查行动。'}};
   const run=await f.runtime.execute(options),after=(await f.db.get('c','b')).world;
-  assert.deepEqual(f.requests.map(r=>r.tools),[['execute_inquiry'],[]]);assert.equal(run.inquiry.completed,true);
+  assert.ok(f.requests.every(r=>r.tools.includes('execute_inquiry')&&r.tools.includes('mechanism')));assert.equal(run.inquiry.completed,true);
   assert.equal(after.time,10);assert.equal(Object.keys(after.knowledge).length,1);assert.deepEqual(Object.values(after.knowledge)[0].knowers,['A']);
   assert.equal((await f.store.list('rolls')).length,1);await f.runtime.execute(options);assert.equal((await f.store.list('rolls')).length,1);
 });

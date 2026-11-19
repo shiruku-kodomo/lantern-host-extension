@@ -28,9 +28,9 @@ test('boss stage advance retains actual MP and forbids premature final rewards',
   await assert.rejects(engine.execute(w,{id:'bad',type:'growth.victory',args:{entityId:'A',enemyId:'B',battleId:'b',actualDefeated:true}}),/资格/);
   const r=await engine.execute(w,{id:'phase',type:'combat.phase',args:{battleId:'b',actualShellBroken:true,basis:'human shell actually broken'}});assert.equal(r.world.entities.B.form,'true');assert.deepEqual(r.world.entities.B.mp,F(12000));assert.deepEqual(r.world.entities.B.mpRatio,F(1,2));assert.equal(r.world.entities.A.forms.normal.hp,100);
 });
-test('normal world-boss encounter cannot bypass mainline, known location and route requirements',async()=>{
+test('host decides boss encounters without hardcoded campaign and location gates',async()=>{
   const{engine}=await setup();const w=emptyWorld();w.entities.A=entity('A');w.entities.B=entity('B',{kind:'world-boss'});
-  await assert.rejects(engine.execute(w,{id:'battle',type:'combat.start',args:{id:'b',allies:['A'],enemies:['B'],majorEnemyId:'B',basis:'try direct fight'}}),/前置未齐/);
+  const r=await engine.execute(w,{id:'battle',type:'combat.start',args:{id:'b',allies:['A'],enemies:['B'],majorEnemyId:'B',basis:'host arranged encounter'}});assert.equal(r.world.battles.b.status,'active');
 });
 test('same-event player ending has priority over world-boss result at final commit',()=>{
   const w=emptyWorld();w.entities.A=entity('A',{training:100});w.entities.B=entity('B',{kind:'world-boss',defeated:true});w.targets=['A'];checkOutcome(w);assert.equal(w.outcome,null);checkOutcome(w,true);assert.equal(w.outcome,'player-wins');

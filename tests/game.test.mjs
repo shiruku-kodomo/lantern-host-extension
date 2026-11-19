@@ -89,15 +89,15 @@ test('currency transaction rounds whole batches exactly and commits both wallets
   r=await apply(engine,r.world,'currency.trade',{quoteId:'quote',buyer:'A',seller:'B',itemId:'stock',accepted:true});assert.equal(r.world.entities.A.wallet,195);assert.equal(r.world.entities.B.wallet,205);assert.equal(r.world.items.stock.quantity,6);
   await assert.rejects(apply(engine,r.world,'currency.trade',{quoteId:'quote',buyer:'A',seller:'B',itemId:'stock',accepted:true}),/成交/);
 });
-test('rest accumulates fractional minutes, time stops at deadlines, travel cannot teleport remote characters',async()=>{
+test('rest and time stay exact; host travel accepts descriptive location differences',async()=>{
   const{engine}=await fixture();let w=emptyWorld();w.entities.A=entity('A',{hp:F(0)});for(let i=0;i<6;i++)w=(await apply(engine,w,'rest.recover',{entityId:'A',minutes:10,restId:'rest',basis:'actual rest'})).world;assert.deepEqual(w.entities.A.hp,F(10));
   const start=w.time;w.quests.q={id:'q',status:'active',deadline:start+15};const time=await apply(engine,w,'time.advance',{minutes:30,basis:'walking'});assert.equal(time.result.time,start+15);assert.equal(time.result.remaining,15);
-  w=(await apply(engine,w,'route.create',{id:'r',from:'B',to:'C',mode:'walk',minutes:1,cost:0,basis:'known path'})).world;await assert.rejects(apply(engine,w,'movement.travel',{routeId:'r',entities:['A'],conditionsMet:true,basis:'walk'}),/起点/);
+  w=(await apply(engine,w,'route.create',{id:'r',from:'B',to:'C',mode:'walk',minutes:1,cost:0,open:false,basis:'host route'})).world;const moved=await apply(engine,w,'movement.travel',{routeId:'r',entities:['A'],basis:'host departure'});assert.equal(moved.world.entities.A.location,'C');assert.equal(moved.result.journey.departures.A,'A');
 });
-test('random events require explicit input and reuse a main event; modified 100 differs from natural 100',async()=>{
+test('host decides event timing; event ids replay and modified 100 differs from natural 100',async()=>{
   const{engine}=await fixture();let w=emptyWorld();w.entities.A=entity('A');w.quests.q={status:'active',doomed:true};engine.dice=async()=>({raw:[60],total:100});
   let r=await apply(engine,w,'random.event',{turnId:'turn',explicitRequest:true,affected:['A']});assert.equal(r.result.category,'high-risk-choice');assert.equal(r.world.entities.A.formalDefeat,undefined);
-  engine.dice=async()=>({raw:[100],total:140});r=await apply(engine,r.world,'random.event',{turnId:'turn',explicitRequest:true,affected:['A']});assert.equal(r.result.category,'high-risk-choice');await assert.rejects(apply(engine,w,'random.event',{turnId:'x',explicitRequest:false}),/明确请求/);
+  engine.dice=async()=>({raw:[100],total:140});r=await apply(engine,r.world,'random.event',{turnId:'turn',explicitRequest:true,affected:['A']});assert.equal(r.result.category,'high-risk-choice');const next=await apply(engine,w,'random.event',{turnId:'x',explicitRequest:false,affected:['A']});assert.equal(next.result.category,'direct-defeat');
 });
 test('intelligence projection preserves core facts, protects active quest clues, and character views never inherit other knowers',async()=>{
   const{engine}=await fixture();let w=emptyWorld();w.entities.A=entity('A');w.entities.B=entity('B');w.definitions.org={id:'org',origin:'canonical'};
