@@ -6,12 +6,12 @@ const OPERATIONS={
   'narration.select':'切换叙述者','companion.select':'调整同行安排','form.switch':'切换形态','skill.use':'使用技能',
   'effect.apply':'施加状态','effect.expire':'解除状态','item.acquire':'登记获得物品','item.transfer':'转交物品','item.use':'使用物品','item.equip':'调整装备',
   'knowledge.record':'登记已知情报','knowledge.share':'记录情报传播','knowledge.resolve':'整理过渡线索',
-  'ensure_entity':'建立角色档案',
-  'quest.create':'建立任务','quest.board':'生成任务板','quest.accept':'接取任务','quest.progress':'更新任务进度','quest.finish':'结算任务奖励','quest.pay':'结算实际报酬',
+  'ensure_entity':'建立角色档案','execute_actions':'批量执行行动',
+  'quest.create':'建立任务','quest.board':'生成任务板','quest.accept':'接取任务','quest.progress':'更新任务进度','quest.finish':'结算任务奖励',
   'combat.start':'建立战斗判定块','combat.exchange':'执行战斗交锋','combat.finish':'结算战斗结果','combat.phase':'承接Boss下一阶段',
   'growth.victory':'结算胜利成长','growth.defeat':'结算正式败北','time.advance':'推进游戏时间','rest.recover':'结算休整恢复',
-  'route.create':'登记路线','movement.travel':'执行移动','world.register':'登记世界实体','world.progress':'检查世界阶段',
-  'identity.observe':'登记身份识别','random.event':'判定本轮随机事件','currency.transfer':'转交资金','currency.quote':'计算报价','currency.trade':'结算交易',
+  'scene.update':'更新场景','world.register':'登记世界实体','world.progress':'检查世界阶段',
+  'identity.observe':'登记身份识别','random.event':'判定本轮随机事件',
 };
 const compact=(text,max=110)=>{const value=String(text??'').replace(/\s+/g,' ').trim();return value.length>max?`${value.slice(0,max)}…`:value;};
 const roleName=role=>ROLES[role]||'主持';
@@ -78,8 +78,9 @@ export function activityProjection(trace=[]){
     else if(['commit','worldbook'].includes(t.kind))addStep({...t,agent:'host',tool:t.kind,parameters:{}});
     if(t.kind==='request')request=t;else if(t.kind==='response'){usage.push({agent:t.agent,input:t.usage?.prompt_tokens??t.usage?.input_tokens??t.usage?.promptTokenCount??t.inputTokens,output:t.usage?.completion_tokens??t.usage?.output_tokens??t.usage?.candidatesTokenCount,estimated:!t.usage,capacity:request?.capacity});request=null;}
   }
+  const timing={model:trace.filter(t=>t.kind==='response').reduce((n,t)=>n+(t.durationMs||0),0),tools:trace.filter(t=>t.kind==='tool'&&t.status==='complete'&&t.tool!=='delegate').reduce((n,t)=>n+(t.durationMs||0),0),save:trace.filter(t=>['commit','worldbook'].includes(t.kind)).reduce((n,t)=>n+(t.durationMs||0),0)};
   const active=[...steps.values()].reverse().find(s=>s.status==='running'),latest=items.at(-1);
-  return{items,active,request,lastAgent,latest,usage,toolCount:[...steps.values()].filter(s=>s.status==='complete'&&!['commit','worldbook'].includes(s.tool)).length};
+  return{items,active,request,lastAgent,latest,usage,timing,toolCount:[...steps.values()].filter(s=>s.status==='complete'&&!['commit','worldbook'].includes(s.tool)).length};
 }
 function element(tag,className,text){const e=document.createElement(tag);if(className)e.className=className;if(text!==undefined)e.textContent=text;return e;}
 function setText(node,text){if(node.textContent!==text)node.textContent=text;}
@@ -107,6 +108,7 @@ export function renderActivity(container,message,{state,markdown}){
   status.querySelector('.lh-activity-follow').hidden=!running||state.follow!==false;
   status.dataset.running=String(running);
   setText(status.querySelector('.lh-activity-status-text'),running?active?`${roleName(active.agent)} · ${toolPresentation(active).title}`:`${roleName(projected.request?.agent||projected.lastAgent)}正在整理结果…`:`${message.status==='failed'?'本轮在这里暂停':message.status==='cancelled'?'本轮已停止':'本轮处理记录'} · ${projected.toolCount}项操作${message.commit?' · 结算已保存':''}`);
+  const timing=projected.timing;if(timing.model||timing.tools||timing.save)status.querySelector('.lh-activity-status-text').textContent+=` · 模型 ${(timing.model/1000).toFixed(1)}秒 · 工具 ${(timing.tools/1000).toFixed(1)}秒 · 保存同步 ${(timing.save/1000).toFixed(1)}秒`;
   const present=new Set();
   projected.items.forEach((item,index)=>{
     present.add(item.key);let node=nodes.get(item.key);

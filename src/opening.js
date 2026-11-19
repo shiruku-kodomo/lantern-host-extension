@@ -7,7 +7,7 @@ export async function applyRunOperation(run, engine, operation) {
     return run.operationResults?.[operation.id];
   }
   const applied=await engine.execute(run.world,operation);
-  run.world=applied.world; run.operations.push(operation);
+  run.world=applied.world;if(operation.type==='entity.create'&&applied.result.entity){run.turnStartAffection??={};run.turnStartAffection[applied.result.entity.id]??=applied.result.entity.affection;}run.operations.push(operation);
   run.operationResults??={}; run.operationResults[operation.id]=applied.result;
   return applied.result;
 }
@@ -32,11 +32,10 @@ export async function ensureEntity(run, engine, args, input) {
 export async function prepareOpening(run, engine, args, input) {
   if(!run.opening)throw new Error('当前不是需要初始化的开局；请使用具体机制推进。');
   if(run.world.opening?.completed)return {...run.world.opening,reused:true};
-  if(run.opening.needsPlayer&&!args.player)throw new Error('本轮需要一次性给出玩家身份与人物面板。');
-  if(run.opening.needsQuests&&(!Array.isArray(args.quests)||args.quests.length!==3))throw new Error('本轮需要一次性给出三个任务候选。');
+  if(!args.player&&!args.quests?.length)throw new Error('请提供玩家档案或三个任务候选；已经保存的部分不需重交。');
   if(args.quests?.length&&args.quests.length!==3)throw new Error('任务板需要三个候选。');
   for(const quest of args.quests||[])if(!quest.hiddenFailure?.trim())throw new Error('每项候选需在投骰前固定可能的失败事实 hiddenFailure。');
-  const staged=structuredClone(run); const result={completed:true};
+  const staged=structuredClone(run); const result={...run.world.opening,completed:false};
   if(args.player){
     const player=await ensureEntity(staged,engine,{...args.player,id:'player',kind:'player',location:args.player.location||staged.opening.location},input);
     result.playerId=player.entity.id;
@@ -52,7 +51,10 @@ export async function prepareOpening(run, engine, args, input) {
     await applyRunOperation(staged,engine,{id:'opening:quest-board',type:'quest.board',args:{questIds:ids}});
     result.questIds=ids;
   }
-  staged.world.opening=result; staged.opening={...staged.opening,...result};
+  const needsPlayer=staged.opening.needsPlayer&&!staged.world.entities.player?.forms,needsQuests=staged.opening.needsQuests&&!result.questIds?.length;
+  result.completed=!needsPlayer&&!needsQuests;result.pendingFields=[...(needsPlayer?['player']:[]),...(needsQuests?['quests']:[])];
+  staged.world.opening=result; staged.opening={...staged.opening,...result,needsPlayer,needsQuests};
   Object.assign(run,{world:staged.world,operations:staged.operations,operationResults:staged.operationResults,opening:staged.opening});
-  return {...result,player:result.playerId?run.world.entities[result.playerId]:undefined,quests:(result.questIds||[]).map(id=>{const q=run.world.quests[id];return {id:q.id,name:q.name,goal:q.goal,location:q.location,level:q.level};}),nextStop:'玩家选择任务；尚未接受或执行任何任务。'};
+  run.world.nextStop=result.completed?'玩家选择任务；尚未接受或执行任何任务。':`继续补齐开局：${result.pendingFields.join('、')}；已保存部分直接复用。`;
+  return {...result,player:result.playerId?run.world.entities[result.playerId]:undefined,quests:(result.questIds||[]).map(id=>{const q=run.world.quests[id];return {id:q.id,name:q.name,goal:q.goal,location:q.location,level:q.level};}),nextStop:run.world.nextStop};
 }

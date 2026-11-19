@@ -62,7 +62,7 @@ test('real bundled Xiaofei opens in two model turns: fixed NPC, player panel, kn
   const role=Object.values(w.entities).find(e=>e.name==='月晓菲');
   assert.equal(role.kind,'character');assert.deepEqual(role.forms.normal,{hp:150,mp:30,attack:20,defense:15,speed:5});
   assert.ok(role.affection>=71&&role.affection<=90);assert.match(role.personality,/傲慢/);assert.equal(role.location,'深圳');
-  assert.equal(w.entities.player.name,player.name);assert.ok(w.entities.player.forms);assert.equal(w.entities.player.wallet,100);
+  assert.equal(w.entities.player.name,player.name);assert.ok(w.entities.player.forms);assert.equal(w.entities.player.wallet,undefined);
   assert.equal(Object.keys(w.quests).length,3);assert.ok(Object.values(w.quests).every(q=>q.status==='offered'));
   assert.ok(Object.values(w.knowledge).some(k=>k.field==='初始情报'&&k.knowers.includes(role.id)));
   assert.equal(JSON.stringify(f.requests[0].messages).includes('文生图专用外观描述'),false);
@@ -163,7 +163,7 @@ test('one declared combat block performs five exchanges and ten dice, applies ma
   const run=await f.runtime.execute(options),after=(await f.db.get('c','b')).world;
   assert.equal(run.combatBlock.completed,true);assert.equal(after.battles[args.id].rounds.length,5);assert.equal((await f.store.list('rolls')).length,10);
   assert.equal(after.battles[args.id].status,'defeat');assert.equal(after.entities.A.defeats,1);
-  assert.ok(!after.entities.A.formalDefeat);assert.equal(f.requests.length,2);
+  assert.ok(!after.entities.A.formalDefeat);assert.equal(f.requests.length,1);
   await f.runtime.execute(options);assert.equal((await f.store.list('rolls')).length,10);
 });
 test('combat interruption after the third actual die resumes the same declarations and reuses those three dice',async()=>{

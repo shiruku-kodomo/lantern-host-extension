@@ -22,7 +22,7 @@ export function normalizeSettings(raw = {}) {
     agentPrompts: normalizeAgentPrompts(raw), agentPromptVersion: 2,
     disabledCommands: Array.isArray(raw.disabledCommands) ? [...raw.disabledCommands] : [],
     customCommands: Array.isArray(raw.customCommands) ? structuredClone(raw.customCommands) : [],
-    profiles: Array.isArray(raw.profiles) ? structuredClone(raw.profiles).map(p=>({...p,protocol:p.protocol||'openai',maxTokens:p.maxTokens??4096,temperature:p.temperature??0.7})) : [],
+    profiles: Array.isArray(raw.profiles) ? structuredClone(raw.profiles).map(p=>({...p,protocol:p.protocol||'openai',maxTokens:p.maxTokens??4096,temperature:p.temperature??0.7,timeoutSeconds:p.timeoutSeconds??90,stepMaxTokens:p.stepMaxTokens??4096})) : [],
   };
 }
 export function currentChatKey(ctx, account = 'default') {

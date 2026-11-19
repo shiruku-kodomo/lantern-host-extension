@@ -1,3 +1,4 @@
+import {deliverHandoff} from './src/handoff.js';
 import { TavernBridge } from './src/bridge.js';
 import { LocalStore } from './src/storage.js';
 import { ModelClient, connectionPayload } from './src/provider.js';
@@ -7,7 +8,7 @@ import { WorldbookProjection } from './src/worldbook.js';
 import { ExtensionUpdater, VERSION, REPOSITORY } from './src/updater.js';
 import { renderActivity } from './src/activity.js';
 import { hydrateConversation, appendMessage, editUserMessage, versionsOf, switchVersion } from './src/conversation.js';
-import { ContextManager, contextBudget, estimateTokens, modelCapacity } from './src/context.js';
+import { ContextManager, contextBudget, estimateTokens, modelCapacity, hostStepProfile } from './src/context.js';
 import { BUILTIN_COMMANDS, commandList, parseCommand, expandCommand, updateGoal, validateCommands } from './src/commands.js';
 import { renderMarkdown } from './src/markdown.js';
 import { DocumentLibrary } from './src/documents.js';
@@ -331,12 +332,12 @@ class HostWorkspace {
   renderBudget() {
     const node = this.root.querySelector('.lh-budget'); if (!node) return;
     const profile = this.profile(); if (!profile) { node.textContent = ''; return; }
-    const budget = contextBudget(profile);
+    const budget = contextBudget(hostStepProfile(profile));
     const catalog = this.library?.catalog ? this.library.list() : [];
     const docBytes = this.session.selectedDocs.map(id => catalog.find(d => d.id === id)).filter(Boolean).reduce((n, d) => n + (d.bytes || new TextEncoder().encode(d.content || '').length), 0);
     const used = estimateTokens(requestMessages({ settings: this.settings, session: this.session, context: this.bridge.snapshot(this.settings.contextLimit) })) + Math.ceil(docBytes / 2) + estimateTokens([{ content: this.session.draft }]);
-    node.textContent = this.runPhase === 'compacting' && this.busy ? '正在压缩较早对话…' : `输入估算 ${Math.min(100, Math.round(used / budget.capacity * 100))}% · ${Math.round(used / 1000)}k / ${Math.round(budget.capacity / 1000)}k · 回复预留 ${Math.round((Number(profile.maxTokens)||4096)/1000)}k${this.session.compactions?.length ? ' · 已压缩' : ''}`;
-    node.title = `输入估算 ${used} Token，预留回复 ${Number(profile.maxTokens) || 4096} Token；有效容量 ${budget.capacity}。来源：${budget.source}。${this.settings.autoCompact ? '接近容量时自动压缩。' : '自动压缩已关闭。'}`;
+    node.textContent = this.runPhase === 'compacting' && this.busy ? '正在压缩较早对话…' : `输入估算 ${Math.min(100, Math.round(used / budget.capacity * 100))}% · ${Math.round(used / 1000)}k / ${Math.round(budget.capacity / 1000)}k · 回复预留 ${Math.round(Math.min(Number(profile.maxTokens)||4096,Number(profile.stepMaxTokens)||4096)/1000)}k${this.session.compactions?.length ? ' · 已压缩' : ''}`;
+    node.title = `输入估算 ${used} Token，本轮步骤预留 ${Math.min(Number(profile.maxTokens)||4096,Number(profile.stepMaxTokens)||4096)} Token（连接设置上限 ${Number(profile.maxTokens)||4096}）；有效容量 ${budget.capacity}。来源：${budget.source}。${this.settings.autoCompact ? '接近容量时自动压缩。' : '自动压缩已关闭。'}`;
   }
   renderContextBadge() {
     const node = this.root.querySelector('.lh-context-count');
@@ -380,7 +381,7 @@ class HostWorkspace {
       if (documents.reduce((size, doc) => size + doc.content.length, 0) > 100000) throw new Error('附加资料超过 10 万字，请减少所选资料后重试。');
       controller.signal.throwIfAborted();
       this.runPhase = 'generating';
-      const prepared = await this.contextManager.prepare({ settings: requestSettings, session: requestSession, context: requestContext, documents }, profile, {
+      const prepared = await this.contextManager.prepare({ settings: requestSettings, session: requestSession, context: requestContext, documents }, hostStepProfile(profile), {
         signal: controller.signal, onCompacting: () => { this.runPhase = 'compacting'; this.session.pending.stage = 'compacting'; this.render(); },
       });
       controller.signal.throwIfAborted();
@@ -462,7 +463,7 @@ class HostWorkspace {
       <label class="lh-wide">接口地址<input data-profile="baseUrl" type="url" placeholder="https://你的接口地址/v1" value="${escape(p.baseUrl)}" autocomplete="off"></label>
       <label class="lh-wide">API Key<input data-profile="apiKey" type="password" value="${escape(p.apiKey)}" autocomplete="new-password" spellcheck="false"></label>
       <label class="lh-wide">模型<input data-profile="model" list="lh-models" value="${escape(p.model)}" placeholder="选择或手动填写模型名"><datalist id="lh-models">${this.models.map(model => `<option value="${escape(model)}"></option>`).join('')}</datalist></label>
-      <label>最大回复 Token<input data-profile="maxTokens" type="number" min="1" max="128000" value="${escape(p.maxTokens)}"></label><label>温度<input data-profile="temperature" type="number" min="0" max="2" step="0.1" value="${escape(p.temperature)}"></label><label>容量来源<select data-profile="capacityMode"><option value="auto">按模型自动映射</option><option value="manual">手动覆盖</option></select></label><label>手动容量 Token<input data-profile="contextWindow" type="number" min="4096" max="2000000" value="${escape(p.contextWindow || modelCapacity(p).effective)}"></label><p class="lh-wide lh-capacity-source">${escape(modelCapacity(p).source)} · 有效窗口 ${modelCapacity(p).effective.toLocaleString()}</p></div>
+      <label>最大回复 Token<input data-profile="maxTokens" type="number" min="1" max="128000" value="${escape(p.maxTokens)}"></label><label>主持步骤回复上限<input data-profile="stepMaxTokens" type="number" min="256" max="128000" value="${escape(p.stepMaxTokens||4096)}"></label><label>单次请求超时（秒）<input data-profile="timeoutSeconds" type="number" min="5" max="600" value="${escape(p.timeoutSeconds||90)}"></label><label>温度<input data-profile="temperature" type="number" min="0" max="2" step="0.1" value="${escape(p.temperature)}"></label><label>容量来源<select data-profile="capacityMode"><option value="auto">按模型自动映射</option><option value="manual">手动覆盖</option></select></label><label>手动容量 Token<input data-profile="contextWindow" type="number" min="4096" max="2000000" value="${escape(p.contextWindow || modelCapacity(p).effective)}"></label><p class="lh-wide lh-capacity-source">${escape(modelCapacity(p).source)} · 有效窗口 ${modelCapacity(p).effective.toLocaleString()}</p></div>
       <div class="lh-buttons"><button data-action="models" ${this.modelConnecting ? 'disabled' : ''}>${this.modelConnecting ? '正在连接…' : '连接并获取模型'}</button><button data-action="profile-save" class="lh-primary">保存并使用</button>${this.settings.profiles.some(item => item.id === p.id) ? '<button data-action="profile-delete" class="lh-danger">删除连接</button>' : ''}</div><p class="lh-feedback" role="status">${escape(this.modelFeedback || '')}</p>
       <hr><h2>主持提示词</h2><label class="lh-field"><textarea id="lh-prompt" rows="7" aria-label="主持系统提示词">${escape(this.promptDraft)}</textarea></label><label class="lh-field">读取最近的酒馆消息数量<input id="lh-context-limit" type="number" min="1" max="200" value="${this.contextLimitDraft ?? this.settings.contextLimit}"></label><label class="lh-auto-compact"><input id="lh-auto-compact" type="checkbox" ${(this.autoCompactDraft ?? this.settings.autoCompact) ? 'checked' : ''}>接近上下文容量时自动压缩较早主持对话</label><button data-action="prompt-save" class="lh-primary">保存提示词与上下文设置</button></div>`;
     main.querySelector('[data-profile="protocol"]').value = p.protocol;
@@ -575,6 +576,7 @@ class HostWorkspace {
         if (!profile.name?.trim() || !profile.model?.trim() || !profile.baseUrl?.trim()) throw new Error('请填写连接名称、接口地址和模型。');
         connectionPayload(profile);
         if (!(Number(profile.maxTokens) > 0 && Number(profile.maxTokens) <= 128000)) throw new Error('最大回复 Token 应为 1—128000。');
+        profile.stepMaxTokens=Number(profile.stepMaxTokens)||4096;if(profile.stepMaxTokens<256||profile.stepMaxTokens>128000)throw new Error('主持步骤回复上限应为256—128000 Token。');profile.timeoutSeconds=Number(profile.timeoutSeconds)||90;if(profile.timeoutSeconds<5||profile.timeoutSeconds>600)throw new Error('单次请求超时应为5—600秒。');
         if (!(Number(profile.temperature) >= 0 && Number(profile.temperature) <= 2)) throw new Error('温度应为 0—2。');
         profile.capacityMode=this.root.querySelector('[data-profile="capacityMode"]').value;
         profile.contextWindow = Number(profile.contextWindow) || modelCapacity(profile).effective;
@@ -603,10 +605,13 @@ class HostWorkspace {
     if (action === 'version-prev' || action === 'version-next') { if (this.busy) return; switchVersion(this.session, button.dataset.id, action === 'version-prev' ? -1 : 1);this.render();const selected=[...this.session.messages].reverse().find(m=>m.gameBranchId);if(selected){const r=this.sessions.current(this.key);r.binding.branchId=selected.gameBranchId;await this.storage.write('bindings',this.key,r.binding);await this.projection.sync(r.binding.campaignId,r.binding.branchId,this.key).catch(error=>{this.saveError=error.message;});}this.saveSoon();this.render(); }
     if (action === 'retry') await this.send({ retryId: button.dataset.id });
     if (action === 'compact') await this.compactNow();
-    if (action === 'preview') {const m=this.session.messages.find(m => m.id === button.dataset.id);if(m.id!==this.session.messages.at(-1)?.id)throw new Error('后面已有新的回合，请先从本轮恢复，避免把后续情报注入这次正文。');if(m.worldbookError)throw new Error('该轮情报世界书尚未同步，请先重试保存。');this.showPreview(handoffPackage(this.session,m));}
+    if (action === 'preview') {const m=this.session.messages.find(m => m.id === button.dataset.id);if(m.id!==this.session.messages.at(-1)?.id)throw new Error('后面已有新的回合，请先从本轮恢复，避免把后续情报注入这次正文。');this.session.handoffSource={messageId:m.id,branchId:this.sessions.current(this.key).binding.branchId};this.showPreview(handoffPackage(this.session,m));if(m.worldbookError)this.root.querySelector('.lh-modal p').textContent='世界书待同步；填入时会附带当前有效情报。由你手动发送。';}
     if (action === 'preview-draft') this.showPreview(this.session.handoff);
     if (action === 'preview-close') this.root.querySelector('.lh-modal')?.remove();
-    if (action === 'handoff') { const key = this.key, text = this.session.handoff,r=this.sessions.current(key).binding;await this.projection.sync(r.campaignId,r.branchId,key);await this.persist(); if (key !== this.bridge.key()) throw new Error('聊天已切换，请回到原聊天确认。'); this.bridge.fill(text, button.dataset.mode); this.root.querySelector('.lh-modal')?.remove(); this.close(true); }
+    if (action === 'handoff') {
+      await deliverHandoff({bridge:this.bridge,sessions:this.sessions,key:this.key,session:this.session,mode:button.dataset.mode});
+      this.root.querySelector('.lh-modal')?.remove();this.close(true);this.persist().catch(()=>{});
+    }
     if (action === 'doc-open') await this.openDoc(button.dataset.id);
     if (action === 'doc-back') this.root.querySelector('.lh-documents')?.classList.remove('lh-doc-reading');
     if (action === 'doc-source') { this.docSource = !this.docSource; await this.openDoc(this.selectedDoc); }

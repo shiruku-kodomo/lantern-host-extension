@@ -1,3 +1,7 @@
+# 当前机制覆盖（0.3.6）
+
+货币、计价、任务付款、路线与移动结算已删除，原章节及场景中的机械价格/路线数据已同步清理。任务的成长与物品、情报奖励保留。地点和报酬由主持叙事处理；scene.update仅记录场景，不检查通行或收取费用。execute_actions批量执行现有机制，仍使用真实骰子和幂等记录。
+
 # 机制执行覆盖清单
 
 23项原机制及任务结算、货币补充共25项版本化规则。下表表示已注册的执行入口，不表示每种内容组合都经过穷尽测试。
@@ -18,7 +22,6 @@
 | 突发事件机制 | `random.event` | 2026-11-14.1 |
 | 角色解锁与正式合作机制 | `entity.create`、`cooperation.accept`、`entity.configure` | 2026-11-14.1 |
 | 同行与叙述切换机制 | `narration.select`、`companion.select` | 2026-11-14.1 |
-| 地图与移动机制 | `route.create`、`movement.travel` | 2026-11-14.1 |
 | 国家机制 | `world.register` | 2026-11-14.1 |
 | 城市机制 | 世界实体定义、运行时依赖读取与参战／出场验证 | 2026-11-14.1 |
 | 组织机制 | `world.progress` | 2026-11-14.1 |
@@ -28,7 +31,6 @@
 | 据点机制 | 世界实体定义、运行时依赖读取与参战／出场验证 | 2026-11-14.1 |
 | 身份暴露与信誉机制 | `identity.observe` | 2026-11-14.1 |
 | 任务结算机制调整 | `quest.finish` | 2026-11-14.1 |
-| 统一货币制度调整 | `quest.pay`、`currency.transfer`、`currency.trade`、`currency.quote` | 2026-11-14.1 |
 
 世界类细分规则在world.register、world.progress、entity.create、entity.outcome及combat.start中按实际类别校验；判定前读取关联规则闭包。技能的真实条件、物品、目标及战果仍需Agent按正式字段组织，脚本拒绝缺失的确定参数。
 

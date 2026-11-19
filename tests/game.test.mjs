@@ -37,7 +37,7 @@ test('canonical panel parser uses exact source values; generated names do not im
   const library={read:async()=>({id:'doc',path:'3.游戏内容/1.参与角色/A.md',content:text,sha256:'v1'}),list:()=>[]};const registry=new ContentRegistry(library);await registry.read('doc');
   const d=registry.definition({id:'A',name:'A',type:'character',origin:'canonical',source:{documentId:'doc',quote:text},fields:{}});assert.equal(d.fields.forms.normal.hp,100);
   assert.throws(()=>registry.definition({id:'A',type:'character',origin:'canonical',source:{documentId:'doc',quote:text},fields:{forms:{normal:{hp:999}}}}),/MISMATCH/);
-  assert.equal(Object.keys(RULES).length,25);assert.ok(ruleClosure(['combat']).includes('form'));for(const id of ['country','city','organization','troop','elite','boss','outpost','identity'])assert.ok(RULES[id]);assert.ok(Object.keys(OP_RULE).length>=35);
+  assert.equal(Object.keys(RULES).length,23);assert.ok(ruleClosure(['combat']).includes('form'));for(const id of ['country','city','organization','troop','elite','boss','outpost','identity'])assert.ok(RULES[id]);assert.ok(Object.keys(OP_RULE).length>=35);
 });
 test('exact resource ratios survive form round trips; sub-unit MP cannot pay integer skill costs',async()=>{
   const{engine}=await fixture();let w=emptyWorld();w.entities.A=entity('A',{forms:{normal:{...panel,hp:3},transformed:{...panel,hp:5}},hp:F(2),hpRatio:F(2,3),mp:F(1,2),mpRatio:F(1,100),skills:['skill']});
@@ -75,24 +75,17 @@ test('skill cost, inventory transfer, registered effects and expiry operate on a
   assert.equal(w.items.i1.quantity,1);assert.equal(Object.values(w.items).find(i=>i.holder==='B').quantity,1);
   await assert.rejects(apply(engine,w,'item.use',{itemId:'i1',entityId:'B',basis:'not holder'}),/持有/);
 });
-test('quest level growth and three independent reward samples are separate from actual money delivery',async()=>{
+test('quest level growth and three independent reward samples are without a currency balance',async()=>{
   const{engine}=await fixture();let count=0;engine.dice=async(id,p)=>{count++;return{raw:[50],total:50,parameters:{sides:p.sides}};};let w=emptyWorld();w.entities.A=entity('A',{hp:F(23)});w.entities.B=entity('B');w.entities.P=entity('P',{wallet:1000});
   w=(await apply(engine,w,'quest.create',{id:'q',name:'q',goal:'goal',completion:'proof',failure:'deadline',location:'A',level:1})).world;
   w=(await apply(engine,w,'quest.accept',{questId:'q',leader:'A',participants:['A','B'],basis:'accepted'})).world;
   w=(await apply(engine,w,'quest.progress',{questId:'q',stepId:'step',basis:'actual proof'})).world;
-  let r=await apply(engine,w,'quest.finish',{questId:'q',finalGoal:true,basis:'actual completion'});assert.equal(count,3);assert.equal(r.world.entities.A.forms.normal.attack,81);assert.deepEqual(r.world.entities.A.hp,F(23));assert.equal(r.world.entities.A.wallet,200);assert.equal(r.result.rewards.item.hit,true);assert.equal(r.result.rewards.knowledge.hit,true);assert.equal(r.result.rewards.character.hit,false);
-  r=await apply(engine,r.world,'quest.pay',{questId:'q',payer:'P',amount:99});assert.deepEqual(r.result.shares,{A:50,B:49});assert.equal(r.world.entities.P.wallet,901);
+  let r=await apply(engine,w,'quest.finish',{questId:'q',finalGoal:true,basis:'actual completion'});assert.equal(count,3);assert.equal(r.world.entities.A.forms.normal.attack,81);assert.deepEqual(r.world.entities.A.hp,F(23));assert.equal(r.world.entities.A.wallet,undefined);assert.equal(r.result.rewards.item.hit,true);assert.equal(r.result.rewards.knowledge.hit,true);assert.equal(r.result.rewards.character.hit,false);
 });
-test('currency transaction rounds whole batches exactly and commits both wallets with inventory',async()=>{
-  const{engine}=await fixture();let w=emptyWorld();w.entities.A=entity('A');w.entities.B=entity('B');w.definitions.water={id:'water',type:'item',fields:{basePrice:1}};w.items.stock={id:'stock',definitionId:'water',holder:'B',quantity:10};
-  let r=await apply(engine,w,'currency.quote',{id:'quote',definitionId:'water',quantity:4,multiplier:1.25});assert.equal(r.result.quote.amount,5);
-  r=await apply(engine,r.world,'currency.trade',{quoteId:'quote',buyer:'A',seller:'B',itemId:'stock',accepted:true});assert.equal(r.world.entities.A.wallet,195);assert.equal(r.world.entities.B.wallet,205);assert.equal(r.world.items.stock.quantity,6);
-  await assert.rejects(apply(engine,r.world,'currency.trade',{quoteId:'quote',buyer:'A',seller:'B',itemId:'stock',accepted:true}),/成交/);
-});
-test('rest and time stay exact; host travel accepts descriptive location differences',async()=>{
+test('rest and time stay exact; scene descriptions do not require travel',async()=>{
   const{engine}=await fixture();let w=emptyWorld();w.entities.A=entity('A',{hp:F(0)});for(let i=0;i<6;i++)w=(await apply(engine,w,'rest.recover',{entityId:'A',minutes:10,restId:'rest',basis:'actual rest'})).world;assert.deepEqual(w.entities.A.hp,F(10));
   const start=w.time;w.quests.q={id:'q',status:'active',deadline:start+15};const time=await apply(engine,w,'time.advance',{minutes:30,basis:'walking'});assert.equal(time.result.time,start+15);assert.equal(time.result.remaining,15);
-  w=(await apply(engine,w,'route.create',{id:'r',from:'B',to:'C',mode:'walk',minutes:1,cost:0,open:false,basis:'host route'})).world;const moved=await apply(engine,w,'movement.travel',{routeId:'r',entities:['A'],basis:'host departure'});assert.equal(moved.world.entities.A.location,'C');assert.equal(moved.result.journey.departures.A,'A');
+  const moved=await apply(engine,w,'scene.update',{entities:['A'],location:'C',summary:'按剧情抵达'});assert.equal(moved.world.entities.A.location,'C');
 });
 test('host decides event timing; event ids replay and modified 100 differs from natural 100',async()=>{
   const{engine}=await fixture();let w=emptyWorld();w.entities.A=entity('A');w.quests.q={status:'active',doomed:true};engine.dice=async()=>({raw:[60],total:100});
@@ -109,13 +102,13 @@ test('intelligence projection preserves core facts, protects active quest clues,
 });
 test('worldbook creates isolated constant System @D 9999 entry, preserves manual content, and rebuilds deleted file',async()=>{
   const{store,db,branch}=await fixture();const books={base:{entries:{0:{uid:0,content:'manual'}}}};let bound='base';
-  const bridge={key:()=> 'chat',context:()=>({chatMetadata:{world_info:bound}}),http:async(path,args)=>path.endsWith('/list')?Object.keys(books).map(file_id=>({file_id})):structuredClone(books[args.name]||{entries:{}}),saveWorld:async(name,data)=>{books[name]=structuredClone(data);},bindWorld:async(key,name)=>{assert.equal(key,'chat');bound=name;}};
+  const bridge={worldNames:async()=>Object.keys(books),key:()=> 'chat',context:()=>({chatMetadata:{world_info:bound}}),http:async(path,args)=>path.endsWith('/list')?Object.keys(books).map(file_id=>({file_id})):structuredClone(books[args.name]||{entries:{}}),saveWorld:async(name,data)=>{books[name]=structuredClone(data);},bindWorld:async(key,name)=>{assert.equal(key,'chat');bound=name;}};
   const projection=new WorldbookProjection(bridge,store,db);await projection.ensureInitial('campaign','chat');let w=structuredClone(branch.world);w.entities.A=entity('A');w.knowledge.k={id:'k',subjectId:'org',field:'name',value:'known',status:'verified',source:'proof',at:0,active:true,canonical:true,knowers:['A']};await db.commit('campaign','branch',{id:'e',baseRevision:0,world:w,operations:[],source:{}});
   const first=await projection.sync('campaign','branch','chat');const entry=books[first.name].entries[first.uid];assert.equal(entry.constant,true);assert.equal(entry.position,4);assert.equal(entry.role,0);assert.equal(entry.depth,9999);assert.equal(books[first.name].entries[0].content,'manual');assert.equal(books.base.entries[0].content,'manual');
   const second=await projection.sync('campaign','branch','chat');assert.equal(second.uid,first.uid);delete books[first.name];await projection.sync('campaign','branch','chat');assert.ok(books[first.name]);
 });
 test('historical edits fork before-action snapshot; handoff uses exact selected source message',async()=>{
-  const{db,branch}=await fixture();const after=structuredClone(branch.world);after.entities.A=entity('A');await db.commit('campaign','branch',{id:'e',baseRevision:0,world:after,operations:[],source:{}});await db.archive('campaign','branch',{id:'turn',userId:'user',before:branch.world});const fork=await db.fork('campaign','branch','user');assert.equal(Object.keys(fork.world.entities).length,0);assert.equal((await db.get('campaign','branch')).world.entities.A.wallet,200);
+  const{db,branch}=await fixture();const after=structuredClone(branch.world);after.entities.A=entity('A');await db.commit('campaign','branch',{id:'e',baseRevision:0,world:after,operations:[],source:{}});await db.archive('campaign','branch',{id:'turn',userId:'user',before:branch.world});const fork=await db.fork('campaign','branch','user');assert.equal(Object.keys(fork.world.entities).length,0);assert.equal((await db.get('campaign','branch')).world.entities.A.wallet,undefined);
   const s=emptySession();hydrateConversation(s);const u=appendMessage(s,{id:'u',role:'user',content:'我的原话',status:'complete'}),m=appendMessage(s,{id:'m',role:'assistant',content:'结果',status:'complete'});assert.ok(handoffPackage(s,m).includes(u.content));
 });
 test('model capacity uses 475k effective window and keeps output reserve separate; manual limits win',()=>{

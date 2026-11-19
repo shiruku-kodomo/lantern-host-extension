@@ -1,4 +1,5 @@
 import { branchKey, digest, stable } from './game-db.js';
+import {serializedQueue} from './core.js';
 export function projectKnowledge(world) {
   const needed = new Set(Object.values(world.quests).filter(q=>['active','offered'].includes(q.status)).flatMap(q=>q.knowledgeIds||[]));
   const records=Object.values(world.knowledge).filter(k=>(k.active!==false||needed.has(k.id))&&(!['falsified','outdated'].includes(k.status)||needed.has(k.id))&&(k.canonical||!k.resolved||needed.has(k.id)));
@@ -11,7 +12,7 @@ export function projectKnowledge(world) {
   return{content:lines.join('\n'),hasCore:records.some(k=>k.canonical),count:groups.size};
 }
 export class WorldbookProjection {
-  constructor(bridge,store,db){Object.assign(this,{bridge,store,db});}
+  constructor(bridge,store,db){Object.assign(this,{bridge,store,db});this.queue=serializedQueue();}
   async ensureInitial(campaignId,key){
     const campaign=await this.store.read('campaigns',campaignId)||{id:campaignId};
     if(campaign.initialWorld!==undefined)return campaign;
@@ -22,23 +23,26 @@ export class WorldbookProjection {
     campaign.initialWorld={name,snapshot:data,version:data?await digest(data):null};
     await this.store.write('campaigns',campaignId,campaign);return campaign;
   }
-  async sync(campaignId,branchId,key){
-    const branch=await this.db.get(campaignId,branchId),campaign=await this.ensureInitial(campaignId,key),projection=projectKnowledge(branch.world);
+  sync(...args){return this.queue(()=>this.syncCurrent(...args));}
+  async syncCurrent(campaignId,branchId,key){
+    if(this.bridge.key()!==key)throw new Error('聊天已切换，情报留待原局同步。');
+    const branch=await this.db.get(campaignId,branchId);
     const pendingKey=`world:${branchKey(campaignId,branchId)}`;
-    if(!branch.worldbook&&!projection.hasCore){
+    await this.store.write('outbox',pendingKey,{campaignId,branchId,type:'worldbook',revision:branch.world.revision});
+    const campaign=await this.ensureInitial(campaignId,key),projection=projectKnowledge(branch.world);
+    if(!branch.worldbook&&!projection.count){
       const current=this.bridge.context().chatMetadata.world_info;
       if(current&&current!==campaign.initialWorld.name){const book=await this.bridge.http('/api/worldinfo/get',{name:current});if(book.extensions?.lanternHost)await this.bridge.bindWorld(key,campaign.initialWorld.name||'');}
-      return{revision:branch.world.revision,skipped:true};
+      await this.store.batch([{store:'outbox',key:pendingKey,delete:true}]);return{revision:branch.world.revision,skipped:true};
     }
-    await this.store.write('outbox',pendingKey,{campaignId,branchId,type:'worldbook',revision:branch.world.revision});
     const name=branch.worldbook?.name||`灯火-本局-${campaignId}-${branchId}`;
-    const all=await this.bridge.http('/api/worldinfo/list',{}),exists=all.some(b=>(b.name||b.file_id)===name);
+    const names=await this.bridge.worldNames(),exists=names.includes(name);
     let book=exists?await this.bridge.http('/api/worldinfo/get',{name}):structuredClone(campaign.initialWorld.snapshot||{entries:{}});
+    if(exists&&book.extensions?.lanternHost?.campaignId!==campaignId)throw new Error('同名世界书属于其他来源，未覆盖。');
+    const old=Object.values(book.entries||{}).find(e=>e.extensions?.lanternHost?.campaignId===campaignId);
     // User entries from an inherited branch are retained; only owned entries are replaced.
     for(const [uid,e]of Object.entries(book.entries||{}))if(e.extensions?.lanternHost)delete book.entries[uid];
     book.entries??={};book.extensions??={};
-    if(exists&&book.extensions.lanternHost?.campaignId!==campaignId)throw new Error('同名世界书属于其他来源，未覆盖。');
-    const old=Object.values((exists?await this.bridge.http('/api/worldinfo/get',{name}):{}).entries||{}).find(e=>e.extensions?.lanternHost?.campaignId===campaignId);
     const uid=old?.uid??Math.max(0,...Object.values(book.entries).map(e=>Number(e.uid)||0))+1;
     book.entries[uid]={...(old||{}),uid,key:[],keysecondary:[],comment:'本局角色已知情报',content:projection.content,constant:true,selective:false,disable:false,position:4,role:0,depth:9999,order:100,probability:100,useProbability:true,preventRecursion:true,ignoreBudget:true,
       extensions:{...(old?.extensions||{}),lanternHost:{campaignId,branchId,projectionVersion:branch.world.revision,managed:true}}};

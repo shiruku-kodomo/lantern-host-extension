@@ -16,7 +16,7 @@ export class TavernBridge {
   headers() { return this.context().getRequestHeaders(); }
   async http(path, payload) {
     const result = await this.fetch(path, { method: payload === undefined ? 'GET' : 'POST', headers: this.headers(), ...(payload === undefined ? {} : { body: JSON.stringify(payload) }) });
-    if (!result.ok) throw new Error(`酒馆请求失败（${result.status}）`);
+    if (!result.ok) throw Object.assign(new Error(`酒馆请求失败：${path}（${result.status}）`), {status:result.status,path});
     if(result.status===204)return null;
     return result.json();
   }
@@ -81,6 +81,7 @@ export class TavernBridge {
     if(data.format!=='lantern-backup-v2')throw new Error('不支持的备份格式。');return data;
   }
   async worldModule() { return import('/scripts/world-info.js'); }
+  async worldNames() { const data=await this.http('/api/settings/get',{});if(!Array.isArray(data.world_names))throw new Error('酒馆未返回世界书文件列表（/api/settings/get）。');return data.world_names; }
   async extensionType(name) { const mod=await import('/scripts/extensions.js');return mod.extensionTypes?.[`third-party/${name}`]||mod.extensionTypes?.[name]||null; }
   async saveWorld(name,data) {
     await this.http('/api/worldinfo/edit',{name,data});

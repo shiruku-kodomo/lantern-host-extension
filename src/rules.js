@@ -1,14 +1,14 @@
-export const RULE_VERSION = '2026-11-14.1';
+export const RULE_VERSION = '2026-11-19.2';
 const catalog = {
   dice: ['骰子机制', []], relationship: ['好感度与提议机制', ['dice']], combat: ['战斗机制', ['dice','skill','effect','form','growth']],
   growth: ['成长与败北结算机制',['dice','form']], form: ['变身机制',['skill','effect','identity']], skill: ['技能机制',['effect','item']],
   effect: ['正负面状态机制',['form','time']], item: ['物品机制',['knowledge']], knowledge: ['调查与情报机制',[]], time: ['时间与休整机制',[]],
   quest: ['任务机制',['relationship','dice','knowledge','time']], random: ['突发事件机制',['dice','quest','troop','elite','boss','growth']],
-  cooperation: ['角色解锁与正式合作机制',['relationship','knowledge']], narration: ['同行与叙述切换机制',['cooperation','relationship','movement']],
-  movement: ['地图与移动机制',['country','city','time','knowledge']], country: ['国家机制',['organization','boss']], city: ['城市机制',['country']],
+  cooperation: ['角色解锁与正式合作机制',['relationship','knowledge']], narration: ['同行与叙述切换机制',['cooperation','relationship']],
+  country: ['国家机制',['organization','boss']], city: ['城市机制',['country']],
   organization: ['组织机制',['outpost','boss']], troop: ['兵种机制',[]], elite: ['精英机制',['troop']], boss: ['Boss机制',['country']],
   outpost: ['据点机制',['troop','elite','boss']], identity: ['身份暴露与信誉机制',['knowledge']],
-  reward: ['任务结算机制调整',['quest','growth','item','knowledge']], currency: ['统一货币制度调整',['item']],
+  reward: ['任务结算机制调整',['quest','growth','item','knowledge']],
 };
 export const RULES = Object.fromEntries(Object.entries(catalog).map(([id,[title,dependencies]])=>[id,{id,title,dependencies,version:RULE_VERSION}]));
 export function ruleClosure(ids) { const all=new Set(); const visit=id=>{if(all.has(id))return;if(!RULES[id])throw new Error(`未知机制 ${id}`);all.add(id);RULES[id].dependencies.forEach(visit);};ids.forEach(visit);return [...all]; }
@@ -17,18 +17,18 @@ export const OP_RULE = {
   'narration.select':'narration','companion.select':'narration','form.switch':'form','skill.use':'skill','effect.apply':'effect','effect.expire':'effect',
   'item.acquire':'item','item.transfer':'item','item.use':'item','knowledge.record':'knowledge','knowledge.share':'knowledge','knowledge.resolve':'knowledge',
   'item.equip':'item','entity.outcome':'troop',
-  'entity.configure':'cooperation',
+  'entity.configure':'cooperation','scene.update':'knowledge',
   'combat.phase':'combat',
-  'quest.create':'quest','quest.board':'quest','quest.accept':'quest','quest.progress':'quest','quest.finish':'reward','quest.pay':'currency',
+  'quest.create':'quest','quest.board':'quest','quest.accept':'quest','quest.progress':'quest','quest.finish':'reward',
   'combat.start':'combat','combat.exchange':'combat','combat.finish':'combat','growth.victory':'growth','growth.defeat':'growth',
-  'time.advance':'time','rest.recover':'time','route.create':'movement','movement.travel':'movement','world.register':'country','world.progress':'organization',
-  'identity.observe':'identity','random.event':'random','currency.transfer':'currency','currency.trade':'currency','currency.quote':'currency',
+  'time.advance':'time','rest.recover':'time','world.register':'country','world.progress':'organization',
+  'identity.observe':'identity','random.event':'random',
 };
 export class ContentRegistry {
   constructor(library){this.library=library;this.loaded=new Map();this.ruleCache=new Map();}
   async search(query){return(await this.library.search(query)).slice(0,30).map(d=>({id:d.id,entityId:d.entityId,aliases:d.aliases,title:d.title,path:d.path,version:d.sha256,canonical:!d.imported}));}
   async fields(id,paths){const d=await this.read(id),available=d.fields||Object.fromEntries(Object.entries(d.structured).flatMap(([form,panel])=>Object.entries(panel).map(([field,value])=>[`forms.${form}.${field}`,{value,version:d.sha256}])));return{id:d.id,entityId:d.entityId,path:d.path,version:d.sha256,fields:Object.fromEntries((paths?.length?paths:Object.keys(available)).map(p=>{if(!available[p])throw new Error(`字段不存在：${p}。请读取原文；缺失参数须生成固定定义，不使用猜测值替代。`);return[p,available[p]];}))};}
-  async read(id){const d=await this.library.read(id);this.loaded.set(id,d);return{...d,canonical:!d.imported,version:d.sha256,structured:extractPanels(d.content)};}
+  async read(id){if(this.loaded.has(id))return this.loaded.get(id);const d=await this.library.read(id);const result={...d,canonical:!d.imported,version:d.sha256,structured:extractPanels(d.content)};this.loaded.set(id,result);return result;}
   async rules(ids,{includeDependencies=true}={}){const closure=ruleClosure(ids),docs=[];for(const id of includeDependencies?closure:[...new Set(ids)]){if(!this.ruleCache.has(id)){const r=RULES[id],d=this.library.list().find(d=>d.title.includes(r.title)&&d.path.includes('机制设计'));if(!d)throw new Error(`规则资料缺失：${r.title}`);this.ruleCache.set(id,{rule:id,dependencies:r.dependencies,...await this.read(d.id)});}docs.push(this.ruleCache.get(id));}return docs;}
   source(ref){
     // Player-authored or generated definitions are durable database records, not
@@ -54,8 +54,9 @@ export class ContentRegistry {
       if(value.origin==='canonical'){if(/gender\s*:\s*Female/i.test(text))next.fields.gender='female';else if(/性别设定[^\n]*(?:男性|雄性|男性人格)/.test(text))next.fields.gender=/性别设定[^\n]*构造体/.test(text)?'construct':'male';}
       if(source.canonical&&text.includes('world-boss-velsarn')&&text.includes('转形时保留已支付后的实际剩余值')){next.fields.formResourceMode='absolute';next.fields.battlePhases=['world-boss-velsarn-human','world-boss-velsarn-true'];}
     }
-    if(value.origin==='canonical'&&sourceDoc){next.fieldSources??={};for(const key of ['age','wallet']){if(typeof next.fields?.[key]!=='number'||next.fieldSources[key])continue;const label=key+':',numeric=String(next.fields[key]),line=sourceDoc.content.split(/\r?\n/).find(row=>row.toLowerCase().includes(label.toLowerCase())&&row.includes(numeric));if(line)next.fieldSources[key]=line;}}
+    if(value.origin==='canonical'&&sourceDoc){next.fieldSources??={};for(const key of ['age']){if(typeof next.fields?.[key]!=='number'||next.fieldSources[key])continue;const label=key+':',numeric=String(next.fields[key]),line=sourceDoc.content.split(/\r?\n/).find(row=>row.toLowerCase().includes(label.toLowerCase())&&row.includes(numeric));if(line)next.fieldSources[key]=line;}}
     if(value.origin==='canonical'&&next.fieldSources)value.fieldSources=next.fieldSources;
+    for(const k of ['wallet','basePrice','currency','priceMultiplier']){if(next.fields)delete next.fields[k];if(next.fieldSources)delete next.fieldSources[k];}
     const visit=(v,path)=>{if(v&&typeof v==='object'){for(const[k,n]of Object.entries(v))visit(n,path?`${path}.${k}`:k);return;}
       if(typeof v!=='number'||path.startsWith('forms.')&&value.type==='character'&&value.origin==='canonical'&&extractPanels(this.loaded.get(source.documentId).content)[path.split('.')[1]])return;
       if(value.origin==='canonical'){const cite=value.fieldSources?.[path],numeric=String(v).replace(/[.*+?^${}()|[\]\\]/g,'\\$&');if(!cite||!sourceDoc?.content.includes(cite)||!new RegExp(`(^|[^0-9])${numeric}([^0-9]|$)`).test(cite.replaceAll('−','-')))throw new Error(`SOURCE_FIELD_MISMATCH：${path} 数值必须有精确原文引文；原文未定时使用generated并说明缺失字段。`);}};

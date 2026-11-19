@@ -8,7 +8,7 @@ const packageVersion=JSON.parse(await readFile(path.join(root,'package.json'))).
 const runtimeVersion=(await readFile(path.join(root,'src/updater.js'),'utf8')).match(/export const VERSION=['"]([^'"]+)/)?.[1];
 if(version!==packageVersion||version!==runtimeVersion)throw new Error('版本文件不一致，已阻止生成错误安装包。');
 const now=new Date(),dosTime=(now.getHours()<<11)|(now.getMinutes()<<5)|(now.getSeconds()>>1),dosDate=((now.getFullYear()-1980)<<9)|((now.getMonth()+1)<<5)|now.getDate();
-const names = ['manifest.json', 'package.json', 'index.js', 'styles.css', 'src', 'content', 'README.md', 'VALIDATION.md', 'CHANGELOG.md', 'INSTALL_VALIDATION.md', 'REVIEW_0.3.3.md', 'RULE_COVERAGE.md', 'BATTLE_TESTS.md', 'DICE_PROOF.md', 'LIVE_AGENT_PROOF.md', 'NOTICE.md', 'LICENSE', 'licenses'];
+const names = ['manifest.json', 'package.json', 'index.js', 'styles.css', 'src', 'content', 'README.md', 'VALIDATION.md', 'CHANGELOG.md', 'INSTALL_VALIDATION.md', 'REVIEW_0.3.3.md', 'REVIEW_0.3.6.md', 'RULE_COVERAGE.md', 'BATTLE_TESTS.md', 'DICE_PROOF.md', 'LIVE_AGENT_PROOF.md', 'NOTICE.md', 'LICENSE', 'licenses'];
 const entries = [];
 async function collect(name) {
   const full = path.join(root, name);

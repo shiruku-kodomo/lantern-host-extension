@@ -1,3 +1,13 @@
+# 0.3.6 实际模型战斗验收
+
+| battle-1 | 2 | 24.5秒 | 10 | complete；1名敌人／5交锋／胜4／victory |
+| battle-2 | 1 | 24.5秒 | 10 | complete；1名敌人／5交锋／胜2／awaiting-choice |
+| battle-3 | 1 | 30.7秒 | 10 | complete；1名敌人／5交锋／胜4／victory |
+| initial-cailian-boss | 1 | 34.5秒 | 10 | complete；1名敌人／5交锋／胜0／defeat |
+| initial-cailian-20 | 2 | 56.3秒 | 10 | complete；20名敌人／5交锋／胜0／defeat |
+
+各场景均使用正式面板、真实脚本骰子及5次交锋，到下一选择点停下。详情见REVIEW_0.3.6.md。下文为历史与确定性边界测试。
+
 # 初始柠彩莲战斗实测
 
 时间：2026-11-18T19:52:13.154Z。Chrome Web Crypto + native IndexedDB + production MechanismEngine。本次LLM调用：0。

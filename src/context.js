@@ -65,3 +65,5 @@ export class ContextManager {
     return { messages, compaction, used, ...budget };
   }
 }
+
+export function hostStepProfile(profile){return {...profile,maxTokens:Math.min(Number(profile.maxTokens)||4096,Number(profile.stepMaxTokens)||4096)};}

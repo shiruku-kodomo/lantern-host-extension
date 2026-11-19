@@ -1,4 +1,4 @@
-import { readdir, readFile, mkdir, writeFile } from 'node:fs/promises';
+import { readdir, readFile, mkdir, writeFile, unlink } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -22,6 +22,7 @@ async function files(directory) {
 }
 await mkdir(target, { recursive: true });
 const catalog = { version: 1, source: '3.策划文档：整体定位、核心玩法、游戏内容（原文）', entries: [] };
+for(const file of await readdir(target))if(/^part-\d+\.json$/.test(file))await unlink(path.join(target,file));
 let part = {}, partBytes = 0, partNumber = 1;
 async function flush() {
   if (!Object.keys(part).length) return;

@@ -1,9 +1,10 @@
+import {migrateWorld} from './migrations.js';
 import { emptySession, readSession, serializedQueue } from './core.js';
 
 export const uid = () => crypto.randomUUID();
 export const stable = value => JSON.stringify(value, (_, v) => v && typeof v === 'object' && !Array.isArray(v) ? Object.fromEntries(Object.keys(v).sort().map(k => [k, v[k]])) : v);
 export async function digest(value) { return [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(typeof value === 'string' ? value : stable(value))))].map(v => v.toString(16).padStart(2, '0')).join(''); }
-export function emptyWorld() { return { version: 1, revision: 0, time: 0, phase: 'daily', entities: {}, definitions: {}, items: {}, knowledge: {}, quests: {}, battles: {}, places: {}, routes: {}, effects: {}, claims: {}, targets: [], countries: {}, events: [], narrator: null, companion: null, nextStop: '等待开场', outcome: null }; }
+export function emptyWorld() { return { version: 2, revision: 0, time: 0, phase: 'daily', entities: {}, definitions: {}, items: {}, knowledge: {}, quests: {}, battles: {}, places: {}, effects: {}, claims: {}, targets: [], countries: {}, events: [], narrator: null, companion: null, nextStop: '等待开场', outcome: null }; }
 export function branchKey(campaign, branch) { return `${campaign}:${branch}`; }
 
 export class GameDatabase {
@@ -22,7 +23,7 @@ export class GameDatabase {
       const prior = branch.world.events.find(e => e.id === event.id);
       if (prior) { if (prior.fingerprint !== fingerprint) throw new Error('EVENT_CONFLICT：同一事件的内容发生变化。'); return { ...prior, reused: true }; }
       if (branch.world.revision !== event.baseRevision) throw new Error('STATE_CONFLICT：状态已变化，请读取最新记录后继续。');
-      const world = structuredClone(event.world);
+      const world = migrateWorld(structuredClone(event.world));
       if (world.revision !== event.baseRevision) throw new Error('无效的结算版本。');
       world.revision++;
       const receipt = { id: event.id, fingerprint, revision: world.revision, operations: event.operations, source: event.source, before: branch.world, after: structuredClone(world), at: Date.now() };

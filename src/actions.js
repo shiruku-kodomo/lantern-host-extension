@@ -38,3 +38,16 @@ export async function executeCombatBlock(run,engine,args,checkpoint=async()=>{})
   const output={completed:true,signature,...result,rounds:staged.world.battles[args.id].rounds,participants:args.allies.map(id=>{const e=staged.world.entities[id];return {id,name:e.name,form:e.form,hp:e.hp,mp:e.mp,defeats:e.defeats};}),nextStop:staged.world.nextStop};
   Object.assign(run,{world:staged.world,operations:staged.operations,operationResults:staged.operationResults,combatBlock:output});return output;
 }
+
+export async function executeActions(run,engine,args,checkpoint=async()=>{},normalize=async op=>op){
+  if(!Array.isArray(args.operations)||!args.operations.length)throw new Error('需提供本轮已经确定的操作。');
+  const ids=new Set();for(const op of args.operations){if(!op.id||ids.has(op.id)||!op.type||!op.args)throw new Error('批量操作需唯一ID、类型及参数。');ids.add(op.id);}
+  const results=[];
+  for(const raw of args.operations){const op=await normalize(raw),result=await applyRunOperation(run,engine,op);results.push({id:op.id,type:op.type,result:compactResult(result)});await checkpoint();}
+  return {completed:true,results,nextStop:run.world.nextStop};
+}
+export function compactResult(value){
+  if(!value||typeof value!=='object')return value;
+  if(Array.isArray(value))return value.map(compactResult);
+  return Object.fromEntries(Object.entries(value).map(([key,v])=>[key,key==='source'&&v&&typeof v==='object'?Object.fromEntries(Object.entries(v).filter(([k])=>!['quote','initialSnapshot'].includes(k))):compactResult(v)]));
+}

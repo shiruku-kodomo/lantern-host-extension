@@ -1,3 +1,4 @@
+import {serveSource} from './serve-source.mjs';
 // Integration test against a real, running local SillyTavern. No paid provider is used.
 // PLAYWRIGHT_MODULE points to an installed Playwright ESM entry when not in node_modules.
 import assert from 'node:assert/strict';
@@ -45,7 +46,7 @@ async function open() { await page.evaluate(() => window.LanternHost.open()); aw
 async function settled() { await page.waitForFunction(() => !window.LanternHost.getStatus().busy); await page.waitForTimeout(800); }
 async function screenshot(name) { await page.waitForTimeout(300); await page.screenshot({ path: fileURLToPath(new URL(name, root)) }); }
 try {
-  await page.goto(process.env.TAVERN_URL || 'http://127.0.0.1:8000/', { waitUntil: 'domcontentloaded' }); await ready();
+  await serveSource(page);await page.goto(process.env.TAVERN_URL || 'http://127.0.0.1:8000/', { waitUntil: 'domcontentloaded' }); await ready();
   backup = await page.evaluate(async () => {
     const ctx = SillyTavern.getContext();
     const data = await (await fetch('/api/settings/get', { method: 'POST', headers: ctx.getRequestHeaders(), body: '{}' })).json();
