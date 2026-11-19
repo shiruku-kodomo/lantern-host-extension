@@ -53,9 +53,6 @@ test('a completed batch can hand off real dice without another model call; turn 
  const runtime=new HostRuntime({db,store,library,model,projection:{sync:async()=>({})}}),options={campaignId:'c',branchId:'b',user:{id:'actual-turn',content:'触发一次事件并给出事实交接'},profile:{model:'qa'},settings:{},messages:[]};
  const run=await runtime.execute(options);assert.equal(run.status,'complete');assert.match(run.output,/真实骰点/);assert.ok(run.world.claims['random:actual-turn']);assert.equal(run.world.claims['random:model-made-id'],undefined);await runtime.execute(options);assert.equal(calls,1);assert.equal((await store.list('rolls')).length,1);
 });
-test('a stalled model request times out instead of hanging indefinitely',async()=>{
- const client=new ModelClient({});await assert.rejects(client.deadline({timeoutSeconds:5},{},({signal})=>new Promise((resolve,reject)=>signal.addEventListener('abort',()=>reject(signal.reason),{once:true}))),/超过5秒/);
-});
 test('generated definitions use the actual turn as provenance without searching for nonexistent canonical documents',async()=>{
  const store=new LocalStore('generated-'+Date.now(),new IDBFactory()),db=new GameDatabase(store);await db.create('c','b');const library=await new DocumentLibrary(store,new URL('../content/',import.meta.url),async u=>new Response(await readFile(u))).init();let calls=0;
  const model={turn:async()=>{assert.equal(++calls,1);return{text:'',tools:[{id:'generated',function:{name:'execute_actions',arguments:JSON.stringify({finish_turn:true,operations:[{id:'temporary',type:'definition.create',args:{id:'temporary-clue',type:'other',name:'现场临时线索',origin:'generated',source:{documentId:'not-a-real-document'},fields:{description:'现场发现的临时线索'}}}]})}}]};}};

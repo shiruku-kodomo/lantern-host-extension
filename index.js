@@ -69,9 +69,9 @@ class HostWorkspace {
     this.runtime = new HostRuntime({ db: this.sessions.db, store: this.storage, model: this.model, library: this.library, projection: this.projection });
     await this.changeChat();
     const rawSettings=this.bridge.settings();
-    if(rawSettings?.agentPrompts?.character!==undefined||rawSettings?.agentPromptModes?.character!==undefined){
-      const cleaned=structuredClone(rawSettings);if(cleaned.agentPrompts)delete cleaned.agentPrompts.character;if(cleaned.agentPromptModes)delete cleaned.agentPromptModes.character;
-      try{await this.bridge.saveSettings(cleaned);}catch(error){this.saveError='旧角色Agent配置清理待重试：'+this.redact(error.message);}
+    if(rawSettings?.agentPrompts?.character!==undefined||rawSettings?.agentPromptModes?.character!==undefined||rawSettings?.profiles?.some(p=>'timeoutSeconds' in p)){
+      const cleaned=structuredClone(rawSettings);if(cleaned.agentPrompts)delete cleaned.agentPrompts.character;if(cleaned.agentPromptModes)delete cleaned.agentPromptModes.character;for(const profile of cleaned.profiles||[])delete profile.timeoutSeconds;
+      try{await this.bridge.saveSettings(cleaned);}catch(error){this.saveError='旧配置清理待重试：'+this.redact(error.message);}
     }
     this.render();
   }
@@ -480,7 +480,7 @@ class HostWorkspace {
       <label class="lh-wide">接口地址<input data-profile="baseUrl" type="url" placeholder="https://你的接口地址/v1" value="${escape(p.baseUrl)}" autocomplete="off"></label>
       <label class="lh-wide">API Key<input data-profile="apiKey" type="password" value="${escape(p.apiKey)}" autocomplete="new-password" spellcheck="false"></label>
       <label class="lh-wide">模型<input data-profile="model" list="lh-models" value="${escape(p.model)}" placeholder="选择或手动填写模型名"><datalist id="lh-models">${this.models.map(model => `<option value="${escape(model)}"></option>`).join('')}</datalist></label>
-      <label>最大回复 Token<input data-profile="maxTokens" type="number" min="1" max="128000" value="${escape(p.maxTokens)}"></label><label>主持步骤回复上限<input data-profile="stepMaxTokens" type="number" min="256" max="128000" value="${escape(p.stepMaxTokens||4096)}"></label><label>单次请求超时（秒）<input data-profile="timeoutSeconds" type="number" min="5" max="600" value="${escape(p.timeoutSeconds||90)}"></label><label>温度<input data-profile="temperature" type="number" min="0" max="2" step="0.1" value="${escape(p.temperature)}"></label><label>容量来源<select data-profile="capacityMode"><option value="auto">按模型自动映射</option><option value="manual">手动覆盖</option></select></label><label>手动容量 Token<input data-profile="contextWindow" type="number" min="4096" max="2000000" value="${escape(p.contextWindow || modelCapacity(p).effective)}"></label><p class="lh-wide lh-capacity-source">${escape(modelCapacity(p).source)} · 有效窗口 ${modelCapacity(p).effective.toLocaleString()}</p></div>
+      <label>最大回复 Token<input data-profile="maxTokens" type="number" min="1" max="128000" value="${escape(p.maxTokens)}"></label><label>主持步骤回复上限<input data-profile="stepMaxTokens" type="number" min="256" max="128000" value="${escape(p.stepMaxTokens||4096)}"></label><label>温度<input data-profile="temperature" type="number" min="0" max="2" step="0.1" value="${escape(p.temperature)}"></label><label>容量来源<select data-profile="capacityMode"><option value="auto">按模型自动映射</option><option value="manual">手动覆盖</option></select></label><label>手动容量 Token<input data-profile="contextWindow" type="number" min="4096" max="2000000" value="${escape(p.contextWindow || modelCapacity(p).effective)}"></label><p class="lh-wide lh-capacity-source">${escape(modelCapacity(p).source)} · 有效窗口 ${modelCapacity(p).effective.toLocaleString()}</p></div>
       <div class="lh-buttons"><button data-action="models" ${this.modelConnecting ? 'disabled' : ''}>${this.modelConnecting ? '正在连接…' : '连接并获取模型'}</button><button data-action="profile-save" class="lh-primary">保存并使用</button>${this.settings.profiles.some(item => item.id === p.id) ? '<button data-action="profile-delete" class="lh-danger">删除连接</button>' : ''}</div><p class="lh-feedback" role="status">${escape(this.modelFeedback || '')}</p>
       <hr><h2>主持提示词</h2><label class="lh-field"><textarea id="lh-prompt" rows="7" aria-label="主持系统提示词">${escape(this.promptDraft)}</textarea></label><label class="lh-field">读取最近的酒馆消息数量<input id="lh-context-limit" type="number" min="1" max="200" value="${this.contextLimitDraft ?? this.settings.contextLimit}"></label><label class="lh-auto-compact"><input id="lh-auto-compact" type="checkbox" ${(this.autoCompactDraft ?? this.settings.autoCompact) ? 'checked' : ''}>接近上下文容量时自动压缩较早主持对话</label><button data-action="prompt-save" class="lh-primary">保存提示词与上下文设置</button></div>`;
     main.querySelector('[data-profile="protocol"]').value = p.protocol;
@@ -593,7 +593,7 @@ class HostWorkspace {
         if (!profile.name?.trim() || !profile.model?.trim() || !profile.baseUrl?.trim()) throw new Error('请填写连接名称、接口地址和模型。');
         connectionPayload(profile);
         if (!(Number(profile.maxTokens) > 0 && Number(profile.maxTokens) <= 128000)) throw new Error('最大回复 Token 应为 1—128000。');
-        profile.stepMaxTokens=Number(profile.stepMaxTokens)||4096;if(profile.stepMaxTokens<256||profile.stepMaxTokens>128000)throw new Error('主持步骤回复上限应为256—128000 Token。');profile.timeoutSeconds=Number(profile.timeoutSeconds)||90;if(profile.timeoutSeconds<5||profile.timeoutSeconds>600)throw new Error('单次请求超时应为5—600秒。');
+        profile.stepMaxTokens=Number(profile.stepMaxTokens)||4096;if(profile.stepMaxTokens<256||profile.stepMaxTokens>128000)throw new Error('主持步骤回复上限应为256—128000 Token。');
         if (!(Number(profile.temperature) >= 0 && Number(profile.temperature) <= 2)) throw new Error('温度应为 0—2。');
         profile.capacityMode=this.root.querySelector('[data-profile="capacityMode"]').value;
         profile.contextWindow = Number(profile.contextWindow) || modelCapacity(profile).effective;

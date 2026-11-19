@@ -88,13 +88,7 @@ export class ModelClient {
     const result = await this.resolve(profile, signal, true);
     return result.models;
   }
-  async deadline(profile,options,request){
-    const controller=new AbortController(),external=options.signal,seconds=Math.max(5,Math.min(600,Number(profile.timeoutSeconds)||90));
-    const abort=()=>controller.abort(external.reason);if(external?.aborted)abort();else external?.addEventListener('abort',abort,{once:true});
-    const timer=setTimeout(()=>controller.abort(new Error('模型请求超过'+seconds+'秒，检查点已保留，可重试当前步骤。')),seconds*1000);
-    try{return await request({...options,signal:controller.signal});}catch(error){if(controller.signal.aborted)throw controller.signal.reason;throw error;}finally{clearTimeout(timer);external?.removeEventListener('abort',abort);}
-  }
-  async turn(profile,messages,options={}){return this.deadline(profile,options,o=>this.turnRequest(profile,messages,o));}
+  async turn(profile,messages,options={}){return this.turnRequest(profile,messages,options);}
   async turnRequest(profile, messages, { signal, tools = [], onText, onSummary, onUsage } = {}) {
     if (!profile.model?.trim()) throw new Error('请先配置主持模型。');
     const resolved = await this.resolve(profile, signal);
@@ -167,7 +161,7 @@ export class ModelClient {
     // Model-list endpoints are optional. Never retry a generation against a guessed URL.
     return { baseUrl: base, models: [] };
   }
-  async chat(profile,messages,options={}){return this.deadline(profile,options,o=>this.chatRequest(profile,messages,o));}
+  async chat(profile,messages,options={}){return this.chatRequest(profile,messages,options);}
   async chatRequest(profile, messages, { signal, onText } = {}) {
     if (!profile.model?.trim()) throw new Error('请先选择或填写主持模型。');
     const resolved = await this.resolve(profile, signal);
