@@ -25,7 +25,7 @@ export class ContextManager {
     if (budget.inputLimit < 512) throw new Error('最大回复 Token 占用了上下文容量，请降低回复上限或提高模型上下文容量。');
     let messages = requestMessages(input), used = estimateTokens(messages);
     if (!force && (input.settings.autoCompact === false || used < budget.inputLimit * 0.8)) {
-      if (used > budget.inputLimit) throw new Error('预计上下文超出模型容量，请开启自动压缩或减少附加资料。');
+
       return { messages, used, ...budget };
     }
     const session = input.session, history = session.messages.filter(m => m.status !== 'running');
@@ -36,7 +36,7 @@ export class ContextManager {
     while (split < history.length - 3 && estimateTokens([...fixed, ...history.slice(split)]) > budget.inputLimit * 0.65) split++;
     while (split > 0 && history[split - 1]?.role !== 'assistant') split--;
     if (split < 2 || (previous && split <= previous.coveredIds.length)) {
-      if (used > budget.inputLimit || force) throw new Error('可压缩的较早对话不足。请减少本轮输入或附加资料，或提高模型上下文容量。');
+      if (force) throw new Error('可压缩的较早对话不足。请减少本轮输入或附加资料，或提高模型上下文容量。');
       return { messages, used, ...budget };
     }
     onCompacting?.(); signal?.throwIfAborted();

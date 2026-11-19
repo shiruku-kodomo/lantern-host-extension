@@ -1,4 +1,5 @@
 export const BUILTIN_COMMANDS = [
+  {name:'reroll',description:'直接重新判定，不要求回退状态或正文'},
   { name: 'plan', description: '切换计划模式；可接要规划的任务' },
   { name: 'chat', description: '回到普通主持对话' },
   { name: 'goal', description: '设置目标；支持 status、pause、resume、done、clear' },

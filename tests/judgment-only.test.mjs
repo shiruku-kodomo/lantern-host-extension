@@ -10,7 +10,7 @@ import {DocumentLibrary} from '../src/documents.js';
 import {HostRuntime,agentTools,validatePlan} from '../src/agents.js';
 import {AGENT_PROMPTS} from '../src/agent-prompts.js';
 import {normalizeSettings,requestMessages,emptySession} from '../src/core.js';
-import {executeCombatBlock} from '../src/actions.js';
+import {executeCombatBlock,executeInquiry} from '../src/actions.js';
 import {completedTurnSummary} from '../src/results.js';
 import {migrateRecord} from '../src/migrations.js';
 import {fraction as F} from '../src/exact.js';
@@ -55,4 +55,17 @@ test('selected narration is actual story context and can be recorded without dem
  const messages=requestMessages({settings:normalizeSettings(),session:emptySession(),context:{messages:[{role:'assistant',content:'店主告诉A：仓库今晚停电。'}]}});assert.match(messages[1].content,/已发生剧情/);assert.ok(!messages[1].content.includes('只作为参考'));
  const runtime=new HostRuntime({...f,model:{turn:async()=>({text:'',tools:[{id:'k',function:{name:'execute_actions',arguments:JSON.stringify({finish_turn:true,operations:[{id:'known',type:'knowledge.record',args:{id:'known',subjectId:'warehouse',field:'停电时间',value:'今晚',status:'rumor',knowers:['A']}}]})}}]})},projection:{sync:async()=>({})}});
  const done=await runtime.execute({campaignId:'c',branchId:'b',user:{id:'u',content:'承接店主刚才的话'},profile:{model:'qa'},settings:{},messages});assert.equal(done.world.knowledge.known.source,'当前选中正文与本轮玩家输入');assert.deepEqual(done.world.entities.A.hp,F(100));assert.equal(done.trace.filter(t=>t.status==='failed').length,0);
+});
+
+test('a new combat invocation can reuse the battle label and reroll without restoring state',async()=>{
+ const f=await fixture(),w=emptyWorld();w.entities.A=entity('A');w.entities.E=entity('E');const run={id:'r',userId:'u',world:w,operations:[],operationResults:{}};
+ const args={id:'battle',allies:['A'],enemies:['E'],majorEnemyId:'E',basis:'直接新判定'};
+ await executeCombatBlock(run,f.engine,args,async()=>{},'first-call');await executeCombatBlock(run,f.engine,args,async()=>{},'fresh-call');assert.equal((await f.store.list('rolls')).length,20);assert.equal(Object.keys(run.world.battles).length,2);
+ await executeCombatBlock(run,f.engine,args,async()=>{},'fresh-call');assert.equal((await f.store.list('rolls')).length,20);
+});
+test('multiple inquiries in one turn have separate results and allow more than 120 fictional minutes',async()=>{
+ const f=await fixture(),w=emptyWorld();w.entities.A=entity('A');const run={id:'r',userId:'u',world:w,operations:[],operationResults:{}};
+ const args={purpose:'询问',actors:['A'],subjectId:'subject-1',minutes:240,success:'一条说法',failure:'未获信息'};
+ await executeInquiry(run,f.engine,args,'',async()=>{},'first-call');await executeInquiry(run,f.engine,{...args,subjectId:'subject-2'},'',async()=>{},'second-call');assert.equal((await f.store.list('rolls')).length,2);assert.equal(Object.keys(run.world.knowledge).length,2);assert.equal(run.world.time,480);
+ await executeInquiry(run,f.engine,args,'',async()=>{},'first-call');assert.equal(run.world.time,480);assert.equal((await f.store.list('rolls')).length,2);
 });

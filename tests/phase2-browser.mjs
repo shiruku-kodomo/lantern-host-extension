@@ -19,7 +19,7 @@ const server=createServer(async(req,res)=>{
   if(fixtureMode==='discussion')content='设置讨论，不改变正式数值。';
   else if(tools.some(t=>t.function.name==='propose_plan')){
     if(!done.length)calls=[tool('propose_plan',{goal:'按正式资料建立柠彩莲并登记姓名情报',steps:[{id:'create',agent:'analysis',task:'读取正式角色并自动建档',dependencies:[],tools:['read_content','mechanism']},{id:'know',agent:'intelligence',task:'登记已知姓名',dependencies:['create'],tools:['mechanism']} ]})];else content='计划已列好，点击执行后建档。';
-  }else if(system.startsWith('你是主持')){
+  }else if(/^你是(?:独立)?主持/.test(system)){
     if(!done.some(v=>v.agent==='analysis'))calls=[tool('delegate',{role:'analysis',task:'按柠彩莲正式资料自动建立本局角色'} )];
     else if(!done.some(v=>v.agent==='intelligence'))calls=[tool('delegate',{role:'intelligence',task:'登记角色实际知道自己的姓名，来源为自我身份认知'})];
     else content='## 本轮结果\n\n已按正式面板建立柠彩莲，记录其已知身份。\n\n等待玩家选择下一行动。';
@@ -61,7 +61,7 @@ try{
     await host.locator('[data-action=preview]').last().click();assert.ok((await host.locator('#lh-handoff').inputValue()).includes('我选择柠彩莲开局，请按正式资料建档并记录她知道自己的名字'));await host.locator('[data-action=handoff][data-mode=replace]').click();await host.locator('.lh-backdrop').waitFor({state:'hidden'});assert.ok((await page.locator('#send_textarea').inputValue()).includes('【玩家本轮原话】'));assert.equal(await app(()=>SillyTavern.getContext().chat.filter(m=>m.is_user).length),0);await app(()=>LanternHost.open());
   });
   await check('retry reuses settlement; new chat has initial worldbook and old chat restores projection',async()=>{
-    const old=await state();await host.locator('[data-action=retry]').last().click();await settled();const retried=await state();assert.equal(retried.branch.world.revision,1);assert.equal(retried.rolls.length,old.rolls.length);
+    const old=await state();await app(async()=>{const a=await(await import('/scripts/extensions/third-party/lantern-host-extension/index.js')).enable();await a.send({retryId:a.session.messages.at(-1).id});});await settled();const retried=await state();assert.equal(retried.branch.world.revision,1);assert.equal(retried.rolls.length,old.rolls.length);
     await app(async()=>SillyTavern.getContext().openCharacterChat(`Lantern-phase2-new-${Date.now()}`));await page.waitForTimeout(700);const fresh=await state();assert.notEqual(fresh.binding.campaignId,old.binding.campaignId);assert.equal(Object.keys(fresh.branch.world.entities).length,0);assert.equal(await app(()=>SillyTavern.getContext().chatMetadata.world_info||null),null);
     await page.evaluate(async chat=>SillyTavern.getContext().openCharacterChat(chat),firstChat);await page.waitForTimeout(700);assert.equal((await state()).binding.campaignId,old.binding.campaignId);assert.equal(await app(()=>SillyTavern.getContext().chatMetadata.world_info),book);
   });

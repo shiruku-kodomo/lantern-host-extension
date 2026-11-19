@@ -255,7 +255,7 @@ class HostWorkspace {
     if(!this.workspaceVisible()){this.renderStatus();return;}
     for (const button of this.root.querySelectorAll('[data-tab]')) button.setAttribute('aria-current', button.dataset.tab === this.tab ? 'page' : 'false');
     const snapshot = this.bridge.snapshot(0);
-    this.root.querySelector('.lh-chat-name').textContent = snapshot.character || '尚未打开聊天';
+    this.root.querySelector('.lh-chat-name').textContent = snapshot.character || '独立主持工作区';
     if (this.tab === 'settings') this.renderSettings();
     else if (this.tab === 'documents') this.renderDocuments().catch(error => { this.error = this.redact(error.message); this.renderAlert(); });
     else this.renderChat();
@@ -280,7 +280,7 @@ class HostWorkspace {
       else row.querySelector('.lh-message-text').textContent = message.content;
       const actions = row.querySelector('.lh-message-actions');
       if (message.role === 'user') actions.innerHTML = `<button data-action="edit-message" data-id="${escape(message.id)}" title="编辑消息" aria-label="编辑消息" ${this.busy ? 'disabled' : ''}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="m15 4 5 5M4 20l5-1L21 7a2 2 0 0 0-5-5L4 14Z"/></svg></button>`;
-      else if (message.status !== 'running') actions.innerHTML = `${message.content ? `<button data-action="preview" data-id="${escape(message.id)}">交给酒馆</button>` : ''}<button data-action="retry" data-id="${escape(message.id)}" ${this.busy ? 'disabled' : ''}>重试这次回复</button>`;
+      else if (message.status !== 'running') actions.innerHTML = `${message.content ? `<button data-action="preview" data-id="${escape(message.id)}">交给酒馆</button>` : ''}<button data-action="retry" data-id="${escape(message.id)}" ${this.busy ? 'disabled' : ''}>${message.status==='complete'?'重新判定 · 重roll':'继续这次请求'}</button>${message.status!=='complete'?`<button data-action="reroll" data-id="${escape(message.id)}" ${this.busy?'disabled':''}>重新判定 · 重roll</button>`:''}`;
       if(message.role==='assistant'&&message.commit&&message.id!==this.session.messages.at(-1)?.id)actions.insertAdjacentHTML('beforeend',`<button data-action="restore-round" data-id="${escape(message.id)}" ${this.busy?'disabled':''}>从本轮恢复</button>`);
       if (message.error) { const error = document.createElement('p'); error.className = 'lh-message-error'; error.textContent = message.error; row.querySelector('.lh-message-text').after(error); }
       if(message.role==='assistant')this.renderRun(row,message);
@@ -335,6 +335,7 @@ class HostWorkspace {
     if (!item) throw new Error('指令未启用或不存在，请输入 /help 查看。');
     if (item.custom) { this.session.draft = expandCommand(item, command.argument); this.saveSoon(); return this.send(); }
     if (command.name === 'plan') { this.session.mode = command.argument === 'off' ? 'chat' : 'plan'; this.session.draft = command.argument === 'off' ? '' : command.argument; this.saveSoon(); this.render(); if (this.session.draft) return this.send(); return; }
+    if(command.name==='reroll'){const previous=[...this.session.messages].reverse().find(m=>m.role==='assistant');if(previous)return this.send({rerollId:previous.id});this.session.draft=command.argument||'进行一次新的真实判定';this.session.mode='chat';return this.send();}
     if (command.name === 'chat') { this.session.mode = 'chat'; this.session.draft = command.argument; this.saveSoon(); this.render(); if (command.argument) return this.send(); return; }
     if (command.name === 'goal') {
       if (!command.argument || command.argument === 'status') { this.showPreview(this.session.goal ? `目标：${this.session.goal.objective}\n状态：${{active:'进行中',paused:'已暂停',complete:'已完成',cleared:'已清除'}[this.session.goal.status] || this.session.goal.status}` : '本局尚未设置目标。', true); this.root.querySelector('.lh-modal h2').textContent = '本局目标'; return; }
@@ -362,17 +363,24 @@ class HostWorkspace {
   }
   async send(options = {}) {
     if (this.busy || !this.key || this.loadFailed) return;
-    const { retryId, editId, text: editedText, confirmedPlan } = options;
+    const { retryId, rerollId, editId, text: editedText, confirmedPlan } = options;
     const profile = structuredClone(this.profile());
     if (!profile) { this.tab = 'settings'; this.render(); throw new Error('请先保存并选择主持模型。'); }
     hydrateConversation(this.session);
     let replyParent;
-    if (retryId) {
+    if(rerollId){
+      const previous=this.session.conversation.nodes.find(m=>m.id===rerollId&&m.role==='assistant'),original=this.session.conversation.nodes.find(m=>m.id===previous?.parentId);
+      if(!original)throw new Error('未找到原消息。');
+      const sourceInput=original.rerollContext?.previousInput||original.content;
+      const oldBranch=previous.gameBranchId||this.sessions.current(this.key).binding.branchId,oldRun=previous.runId?await this.storage.read('runs',branchKey(this.sessions.current(this.key).binding.campaignId,oldBranch)+':'+previous.runId):null;
+      appendMessage(this.session,{id:crypto.randomUUID(),role:'user',content:'重新判定（重roll）：'+sourceInput,status:'complete',rerollContext:{previousInput:sourceInput,previousOutput:previous.content,previousRunId:previous.runId,checks:(oldRun?.trace||[]).filter(t=>['roll_dice','reroll_dice'].includes(t.tool)&&t.status==='complete').map(t=>t.result),beforeEntities:oldRun?.before?.entities||{},afterEntities:oldRun?.world?.entities||{}}});
+      this.session.mode='chat';
+    } else if (retryId) {
       const previous = this.session.messages.find(m => m.id === retryId && m.role === 'assistant');
       if (!previous) throw new Error('未找到要重试的回复。');
       replyParent = previous.parentId;
     } else if (editId) {
-      await this.sessions.fork(this.key,editId);
+      const forked=await this.sessions.fork(this.key,editId);if(forked.currentStateFallback)this.toast('该轮旧快照缺失，已从当前状态继续修改。');
       editUserMessage(this.session, editId, editedText);
       this.session.editDraft = null;
     } else {
@@ -394,12 +402,12 @@ class HostWorkspace {
       await this.sessions.cache(key,this.session);
       await this.persist().catch(()=>{});
       const documents = await Promise.all(requestSession.selectedDocs.map(id => this.library.read(id)));
-      if (documents.reduce((size, doc) => size + doc.content.length, 0) > 100000) throw new Error('附加资料超过 10 万字，请减少所选资料后重试。');
+
       controller.signal.throwIfAborted();
       this.runPhase = 'generating';
       const prepared = await this.contextManager.prepare({ settings: requestSettings, session: requestSession, context: requestContext, documents }, hostStepProfile(profile), {
         signal: controller.signal, onCompacting: () => { this.runPhase = 'compacting'; this.session.pending.stage = 'compacting'; this.render(); },
-      });
+      }).catch(error=>{controller.signal.throwIfAborted();return{messages:requestMessages({settings:requestSettings,session:requestSession,context:requestContext,documents}),warning:error.message};});
       controller.signal.throwIfAborted();
       if (generation !== this.generation || this.key !== key) return;
       if (prepared.compaction) { this.session.compactions.push(prepared.compaction); await this.persist(); }
@@ -563,7 +571,7 @@ class HostWorkspace {
     if (action === 'retry-save') {const b=this.sessions.current(this.key).binding;await this.projection.sync(b.campaignId,b.branchId,this.key);for(const m of this.session.conversation.nodes)m.worldbookError=null;await this.persist();this.render();return; }
     if (action === 'export') { await this.download(); return; }
     if(action==='archives'){const b=this.sessions.current(this.key).binding,turns=await this.storage.list('turns',`${branchKey(b.campaignId,b.branchId)}:`);this.showPreview(turns.sort((a,b)=>a.at-b.at).map(t=>`【${new Date(t.at).toLocaleString()} · ${t.id}】\n原话：${t.input}\n状态版本：${t.worldRevision}\n结果：${t.output}\n下一停点：${t.nextStop}\n世界书版本：${t.worldbook?.revision??'尚无补充'}`).join('\n\n')||'本局尚无完成的回合。',true);this.root.querySelector('.lh-modal h2').textContent='本局每轮存档';return;}
-    if(action==='restore-round'){if(this.busy)return;const m=this.session.messages.find(m=>m.id===button.dataset.id),r=this.sessions.current(this.key),next=await this.sessions.db.fork(r.binding.campaignId,m.gameBranchId||r.binding.branchId,m.parentId,{after:true});r.binding={...r.binding,branchId:next.branchId,backup:null};m.gameBranchId=next.branchId;this.session.conversation.selected[m.id]=null;hydrateConversation(this.session);await this.storage.write('bindings',this.key,r.binding);await this.projection.sync(r.binding.campaignId,r.binding.branchId,this.key);await this.persist();this.render();return;}
+    if(action==='restore-round'){if(this.busy)return;const m=this.session.messages.find(m=>m.id===button.dataset.id),r=this.sessions.current(this.key),next=await this.sessions.db.fork(r.binding.campaignId,m.gameBranchId||r.binding.branchId,m.parentId,{after:true});if(next.currentStateFallback)this.toast('该轮旧快照缺失，已使用当前状态继续。');r.binding={...r.binding,branchId:next.branchId,backup:null};m.gameBranchId=next.branchId;this.session.conversation.selected[m.id]=null;hydrateConversation(this.session);await this.storage.write('bindings',this.key,r.binding);await this.projection.sync(r.binding.campaignId,r.binding.branchId,this.key);await this.persist();this.render();return;}
     if(action==='agents-save'){const next=normalizeSettings({...this.settings,agentPrompts:structuredClone(this.agentPromptDrafts),agentPromptVersion:2});await this.bridge.saveSettings(next);this.settings=next;this.agentPromptDrafts=structuredClone(next.agentPrompts);this.agentPromptsDirty=false;this.settingsDirty=!!(this.promptDirty||this.commandsDirty||this.profileDrafts.size);this.toast('Agent 提示词已保存');return;}
     if(action==='update-check'){button.disabled=true;try{await this.checkUpdates(true);}finally{button.disabled=false;}return;}
     if(action==='update-install'){if(this.busy)throw new Error('请先停止当前运行，保存断点后再更新。');if(this.settingsDirty)throw new Error('页面还有未保存的设置，请保存后再更新。');if(this.updateInstalling)return;this.updateInstalling=true;this.renderUpdateStatus();try{await this.persist();const installed=await this.updater.install();this.toast(`已安装 ${installed.version}，刷新酒馆后加载更新。`);}finally{this.updateInstalling=false;this.renderUpdateStatus();}return;}
@@ -583,7 +591,7 @@ class HostWorkspace {
     if (action === 'models') {
       this.modelConnecting = true; this.modelFeedback = ''; this.render();
       const id = this.profileDraft.id;
-      try { const result = await this.model.resolve(structuredClone(this.profileDraft), AbortSignal.timeout(60000), true); if (this.profileDraft.id === id) { this.models = result.models;this.modelMetadata=result.metadata; this.profileDraft.baseUrl = result.baseUrl; this.profileDrafts.set(id, structuredClone(this.profileDraft)); this.settingsDirty = true; this.modelFeedback = `连接成功，找到 ${result.models.length} 个模型，请选择后保存。`; } }
+      try { const result = await this.model.resolve(structuredClone(this.profileDraft), undefined, true); if (this.profileDraft.id === id) { this.models = result.models;this.modelMetadata=result.metadata; this.profileDraft.baseUrl = result.baseUrl; this.profileDrafts.set(id, structuredClone(this.profileDraft)); this.settingsDirty = true; this.modelFeedback = `连接成功，找到 ${result.models.length} 个模型，请选择后保存。`; } }
       finally { this.modelConnecting = false; this.render(); }
     }
     if (action === 'profile-save' || action === 'profile-delete' || action === 'prompt-save') {
@@ -620,9 +628,10 @@ class HostWorkspace {
     if (action === 'edit-message') { if (this.busy) return; this.session.editDraft = { messageId: button.dataset.id, text: this.session.messages.find(m => m.id === button.dataset.id)?.content || '' }; this.saveSoon(); this.render(); this.root.querySelector('.lh-inline-editor textarea')?.focus(); }
     if (action === 'edit-cancel') { this.session.editDraft = null; this.saveSoon(); this.render(); }
     if (action === 'version-prev' || action === 'version-next') { if (this.busy) return; switchVersion(this.session, button.dataset.id, action === 'version-prev' ? -1 : 1);this.render();const selected=[...this.session.messages].reverse().find(m=>m.gameBranchId);if(selected){const r=this.sessions.current(this.key);r.binding.branchId=selected.gameBranchId;await this.storage.write('bindings',this.key,r.binding);await this.projection.sync(r.binding.campaignId,r.binding.branchId,this.key).catch(error=>{this.saveError=error.message;});}this.saveSoon();this.render(); }
-    if (action === 'retry') await this.send({ retryId: button.dataset.id });
+    if(action==='reroll')return this.send({rerollId:button.dataset.id});
+    if (action === 'retry') {const message=this.session.messages.find(m=>m.id===button.dataset.id);await this.send(message?.status==='complete'?{rerollId:button.dataset.id}:{retryId:button.dataset.id});}
     if (action === 'compact') await this.compactNow();
-    if (action === 'preview') {const m=this.session.messages.find(m => m.id === button.dataset.id);if(m.id!==this.session.messages.at(-1)?.id)throw new Error('后面已有新的回合，请先从本轮恢复，避免把后续情报注入这次正文。');this.session.handoffSource={messageId:m.id,branchId:this.sessions.current(this.key).binding.branchId};this.showPreview(handoffPackage(this.session,m));if(m.worldbookError)this.root.querySelector('.lh-modal p').textContent='世界书待同步；填入时会附带当前有效情报。由你手动发送。';}
+    if (action === 'preview') {const m=this.session.messages.find(m => m.id === button.dataset.id);this.session.handoffSource={messageId:m.id,branchId:this.sessions.current(this.key).binding.branchId};this.showPreview(handoffPackage(this.session,m));if(m.worldbookError)this.root.querySelector('.lh-modal p').textContent='世界书待同步；填入时会附带当前有效情报。由你手动发送。';}
     if (action === 'preview-draft') this.showPreview(this.session.handoff);
     if (action === 'preview-close') this.root.querySelector('.lh-modal')?.remove();
     if (action === 'handoff') {
@@ -654,7 +663,7 @@ export async function enable() {
     const store = new LocalStore(bridge.account); await store.ready;
     const app = new HostWorkspace(bridge, store); application = app;
     try { await app.init(); } catch (error) { app.destroy(); application = null; throw error; }
-    globalThis.LanternHost = Object.freeze({ open: () => app.open(), close: () => app.close(), getStatus: () => ({ chatBound: Boolean(app.key), busy: app.busy, saveError: Boolean(app.saveError), version: VERSION }) });
+    globalThis.LanternHost = Object.freeze({ open: () => app.open(), close: () => app.close(), getStatus: () => ({ chatBound: app.bridge.hasChat(), independent: !app.bridge.hasChat(), busy: app.busy, saveError: Boolean(app.saveError), version: VERSION }) });
     return app;
   })().finally(() => { initializing = null; });
   return initializing;

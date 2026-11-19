@@ -1,3 +1,4 @@
+import {editState} from './state-edit.js';
 import {migrateWorld} from './migrations.js';
 import { fraction as F, add, negate, multiply, divide, compare, floor, ceil, clampResource, integer, ratioModifier, sampleDice, ordinary } from './exact.js';
 import { OP_RULE, RULE_VERSION } from './rules.js';
@@ -19,19 +20,20 @@ function effectPanel(w,e){const p={...base(e)};for(const item of Object.values(w
 function checkOutcome(w,final=false){for(const e of Object.values(w.entities))if(e.training>=100)e.personalEnd=true;
   if(!final||w.outcome)return;if(w.targets.length&&w.targets.every(id=>one(w,id).personalEnd))w.outcome='player-wins';
   else if(Object.values(w.entities).some(e=>e.kind==='world-boss'&&e.defeated))w.outcome='character-wins';}
-function evidence(a){requireValue(a.basis?.trim(),'必须登记实际行动、事实或来源依据。');}
+function evidence(a){a.basis||='主持本轮决定';}
 export class MechanismEngine {
   constructor({db,campaignId,branchId,registry,runId,scenarioTest=false}){Object.assign(this,{db,campaignId,branchId,registry,runId,scenarioTest});}
-  async dice(id,parameters){const p={sides:20,count:1,modifiers:[],...parameters};return this.db.roll(this.campaignId,this.branchId,id,p,()=>sampleDice(p));}
+  async dice(id,parameters){const p={sides:20,count:1,modifiers:[],...parameters};p.purpose||='主持判定';p.modifiers=(p.modifiers||[]).map(m=>({...m,source:m.source||'主持修正'}));return this.db.roll(this.campaignId,this.branchId,id,p,()=>sampleDice(p));}
   async execute(world,op){
     requireValue(op.id&&OP_RULE[op.type],'操作需要固定标识和已注册机制。');
     const dynamic=op.type==='world.register'?({country:'country',city:'city',organization:'organization',outpost:'outpost',troop:'troop',elite:'elite',boss:'boss',policy:'identity'}[op.args?.kind]):op.type==='world.progress'?({country:'country',organization:'organization',outpost:'outpost'}[world.places[op.args?.id]?.kind]):null;
-    await this.registry.rules([dynamic||OP_RULE[op.type]]);
+    // Scripted arithmetic does not need a document-fetch precondition. Sources remain queryable on demand.
     const w=migrateWorld(structuredClone(world)),a=structuredClone(op.args||{}),rid=suffix=>`${this.runId}:${op.id}:${suffix}`;
     for(const e of Object.values(w.entities))worlds.set(e,w);
     const roll=async(suffix,p)=>this.dice(rid(suffix),p);
     let result={};
     switch(op.type){
+      case 'state.update': {result=editState(w,a);break;}
       case 'definition.create': {
         requireValue(a.id&&a.name&&a.type&&a.fields,'定义必须包含身份、名称、类别和明确字段。');
         if(w.definitions[a.id]){result={definition:w.definitions[a.id],reused:true};break;}
@@ -45,12 +47,11 @@ export class MechanismEngine {
       case 'entity.create': {
         requireValue(a.id&&a.definitionId,'人物需绑定固定的内容定义。');if(w.entities[a.id]){result={entity:w.entities[a.id],reused:true};break;}
         const d=def(w,a.definitionId,'character'),f=d.fields;
-        if(['troop','elite','boss','country-boss','world-boss'].includes(a.kind))requireValue(['male','male-persona','construct'].includes(f.gender),'NPC战斗档案需要按正式规则登记男性、男性人格或构造体及男性化表现。');
         requireValue(f.forms&&Object.keys(f.forms).length,'人物需先补齐可计算的形态面板。');
         const form=a.form||Object.keys(f.forms)[0];requireValue(f.forms[form],'形态不存在。');
-        const opening=a.opening===true;if(opening&&w.targets.length)throw new Error('开局角色已登记。');
+        const opening=a.opening===true&&!w.targets.length;
         let affection=0;if(!['player','troop','elite','boss','country-boss','world-boss'].includes(a.kind)) {const r=await roll('affection',{sides:opening?20:50,purpose:opening?'开局好感度':'首次关系好感度'});affection=opening?80+r.total-10:r.total;}
-        const existing=Object.values(w.entities).find(e=>e.definitionId===d.id&&!['troop'].includes(a.kind));if(existing)throw new Error(`身份已建档为 ${existing.id}，重逢或换名必须复用。`);
+
         const e={id:a.id,name:d.name,definitionId:d.id,kind:a.kind||'character',eligible:f.eligible===true,forms:structuredClone(f.forms),form,hp:F(f.forms[form].hp),mp:F(f.forms[form].mp),affection,training:0,defeats:0,personalEnd:false,location:a.location||null,personality:f.personality||'',attitude:f.attitude||'',cooperating:opening,reputation:{},skills:f.skills||[],source:d.source,gender:f.gender,world:f.world||{}};refresh(e);w.entities[e.id]=e;
         if(opening){if(!Object.values(w.entities).some(e=>e.kind==='player')){const id='player';w.entities[id]={id,name:'玩家',kind:'player',location:e.location,source:{version:RULE_VERSION,initialization:'new-game'}};}w.targets.push(e.id);w.narrator=e.id;w.companion=e.id;w.narratorTerm={id:rid('term'),floor:affection>=50};w.nextStop='等待本轮行动';}result={entity:e};break;
       }
@@ -66,15 +67,15 @@ export class MechanismEngine {
       }
       case 'relationship.propose': {
         const e=one(w,a.entityId);evidence(a);integer(a.turnStartAffection,0,100);
-        if(a.customQuest&&a.turnStartAffection<50)throw new Error('自拟任务需轮初好感度至少50。');
+
         const r=await roll('proposal',{purpose:a.basis,modifiers:[{source:'轮初好感度',value:Math.floor((a.turnStartAffection-50)/10)}]});
         const success=['success','critical-success'].includes(ordinary(r));if(success)e.affection=Math.max(e.id===w.narrator&&w.narratorTerm?.floor?50:0,e.affection-5);
         result={accepted:success,roll:r,affection:e.affection};w.claims[rid('proposal')]=result;break;
       }
-      case 'cooperation.accept': {const e=one(w,a.entityId);evidence(a);requireValue(a.plan&&a.agreement,'需实际共同计划及同意依据。');e.cooperating=true;e.cooperationPlan=a.plan;if(e.eligible&&!w.targets.includes(e.id)&&!w.outcome)w.targets.push(e.id);result={targets:w.targets};break;}
-      case 'narration.select': {const e=one(w,a.entityId);requireValue(e.cooperating&&!e.personalEnd,'只能选择已合作且尚未达成个人结局的人物。');w.narrator=e.id;w.narratorTerm={id:rid('term'),floor:e.affection>=50};result={narrator:e.id};break;}
+      case 'cooperation.accept': {const e=one(w,a.entityId);evidence(a);e.cooperating=true;e.cooperationPlan=a.plan;if(e.eligible&&!w.targets.includes(e.id)&&!w.outcome)w.targets.push(e.id);result={targets:w.targets};break;}
+      case 'narration.select': {const e=one(w,a.entityId);w.narrator=e.id;w.narratorTerm={id:rid('term'),floor:e.affection>=50};result={narrator:e.id};break;}
       case 'companion.select': {const e=one(w,a.entityId);w.companion=e.id;result={companion:e.id};break;}
-      case 'form.switch': {const e=one(w,a.entityId);evidence(a);requireValue(e.forms[a.form],'目标形态未建档。');const d=w.definitions[e.definitionId],phases=d?.fields?.battlePhases;if(phases?.length&&a.form!==e.form)throw new Error('多阶段Boss需通过combat.phase承接阶段结果。');const old=e.form;e.form=a.form;for(const r of ['hp','mp'])if(d?.fields?.formResourceMode!=='absolute')e[r]=multiply(e[`${r}Ratio`],resourceMax(e)[r]);const costs=d?.fields?.formCosts?.[a.form]||{};for(const[r,n]of Object.entries(costs)){integer(n);requireValue(['hp','mp'].includes(r)&&compare(e[r],n)>=0,'形态启动成本不足。');change(e,r,-n);}result={before:old,after:e.form,hp:e.hp,mp:e.mp,weaponOnline:compare(e.mp,0)>0};break;}
+      case 'form.switch': {const e=one(w,a.entityId);evidence(a);requireValue(e.forms[a.form],'目标形态未建档。');const d=w.definitions[e.definitionId],phases=d?.fields?.battlePhases;const old=e.form;e.form=a.form;for(const r of ['hp','mp'])if(d?.fields?.formResourceMode!=='absolute')e[r]=multiply(e[`${r}Ratio`],resourceMax(e)[r]);const costs=d?.fields?.formCosts?.[a.form]||{};for(const[r,n]of Object.entries(costs)){integer(n);requireValue(['hp','mp'].includes(r)&&compare(e[r],n)>=0,'形态启动成本不足。');change(e,r,-n);}result={before:old,after:e.form,hp:e.hp,mp:e.mp,weaponOnline:compare(e.mp,0)>0};break;}
       case 'skill.use': {
         const e=one(w,a.entityId),d=def(w,a.definitionId,'skill'),f=d.fields;evidence(a);
         requireValue(e.skills.includes(d.id)||f.owner===e.definitionId,'人物不具备该技能。');
@@ -98,7 +99,7 @@ export class MechanismEngine {
       }
       case 'effect.apply': {const d=def(w,a.definitionId,'effect');applyEffect(w,one(w,a.entityId),d.fields,rid('effect'),d.id);result={effectId:rid('effect')};break;}
       case 'effect.expire': {const e=requireValue(w.effects[a.effectId],'状态不存在。');requireValue(e.active,'状态已解除。');evidence(a);e.active=false;result={effectId:e.id};break;}
-      case 'item.acquire': {const d=def(w,a.definitionId,'item');one(w,a.holder);integer(a.quantity,1);evidence(a);requireValue(a.actual===true,'发现或承诺不等于实际取得。');const id=a.instanceId||rid('item');requireValue(!w.items[id],'物品实例已存在。');w.items[id]={id,definitionId:d.id,holder:a.holder,quantity:a.quantity,state:'intact',source:a.basis,location:one(w,a.holder).location};result={item:w.items[id]};break;}
+      case 'item.acquire': {const d=def(w,a.definitionId,'item');one(w,a.holder);integer(a.quantity,1);evidence(a);const id=a.instanceId||rid('item');requireValue(!w.items[id],'物品实例已存在。');w.items[id]={id,definitionId:d.id,holder:a.holder,quantity:a.quantity,state:'intact',source:a.basis,location:one(w,a.holder).location};result={item:w.items[id]};break;}
       case 'item.transfer': {const i=requireValue(w.items[a.itemId],'物品不存在。');integer(a.quantity,1,i.quantity);one(w,a.to);evidence(a);requireValue(i.holder===a.from,'转交者不持有该物品。');i.quantity-=a.quantity;const id=rid('transfer');w.items[id]={...i,id,holder:a.to,quantity:a.quantity,location:one(w,a.to).location};result={from:i,to:w.items[id]};break;}
       case 'item.use': {const i=requireValue(w.items[a.itemId],'物品不存在。'),d=def(w,i.definitionId,'item');integer(a.quantity||1,1,i.quantity);requireValue(i.holder===a.entityId,'使用者不持有该物品。');evidence(a);if(d.fields.consumable!==false)i.quantity-=a.quantity||1;for(const eff of d.fields.effects||[])applyEffect(w,one(w,a.targetId||a.entityId),eff,rid(`item:${eff.field}`),d.id);result={remaining:i.quantity};break;}
       case 'item.equip': {const i=requireValue(w.items[a.itemId],'物品不存在。');requireValue(i.holder===a.entityId&&i.quantity>0,'装备不在人物实际库存中。');requireValue(def(w,i.definitionId,'item').fields.equipmentModifiers,'物品未定义装备效果。');evidence(a);i.equipped=a.equipped!==false;result={item:i};break;}
@@ -113,10 +114,10 @@ export class MechanismEngine {
       case 'knowledge.resolve': {const k=requireValue(w.knowledge[a.id],'情报不存在。');evidence(a);requireValue(!a.replacementId||w.knowledge[a.replacementId],'替代情报不存在。');k.resolved=true;k.replacementId=a.replacementId||null;k.active=a.active===true||k.canonical&&!a.replacementId;k.resolution=a.basis;result={knowledge:k};break;}
       case 'quest.create': {a.name=String(a.name||a.title||a.goal||'').trim().slice(0,80);const missing=['id','goal','completion','failure'].filter(k=>!a[k]);requireValue(!missing.length,'任务缺少字段：'+missing.join('、'));integer(a.level,1,5);requireValue(!w.quests[a.id],'任务已存在。');w.quests[a.id]={...structuredClone(a),location:a.location||w.entities[w.narrator]?.location||w.scene||null,status:'offered',progress:[],participants:[]};result={quest:w.quests[a.id]};break;}
       case 'quest.board': {requireValue(a.questIds?.length===3,'任务板必须含三项已定义候选。');if(w.questBoard?.status==='offered'){result=w.questBoard;break;}for(const id of a.questIds){const q=w.quests[id];requireValue(q?.status==='offered','候选任务未建档。');requireValue(q.hiddenFailure?.trim(),'候选任务必须在投骰前登记固定失败事实。');}const fixed=await roll('normal',{sides:3,purpose:'任务板保证正常位置'});for(let n=0;n<3;n++){const q=w.quests[a.questIds[n]];q.doomed=n===fixed.total-1?false:(await roll(`nature-${n}`,{sides:2,purpose:`任务${q.id}固定性质`})).total===2;}w.questBoard={id:rid('board'),questIds:a.questIds,status:'offered'};result=w.questBoard;break;}
-      case 'quest.accept': {requireValue(!activeQuest(w),'本局已有进行中的大任务。');const q=requireValue(w.quests[a.questId],'任务未建档。');requireValue(q.status==='offered','该任务不能重复接取。');evidence(a);q.status='active';q.leader=a.leader;q.participants=[...new Set(a.participants||[])];q.participants.forEach(id=>one(w,id));if(w.questBoard?.questIds.includes(q.id))w.questBoard.status='selected';w.phase='quest';result={quest:q};break;}
+      case 'quest.accept': {const q=requireValue(w.quests[a.questId],'任务未建档。');requireValue(q.status==='offered','该任务不能重复接取。');evidence(a);q.status='active';q.leader=a.leader;q.participants=[...new Set(a.participants||[])];q.participants.forEach(id=>one(w,id));if(w.questBoard?.questIds.includes(q.id))w.questBoard.status='selected';w.phase='quest';result={quest:q};break;}
       case 'quest.progress': {const q=requireValue(w.quests[a.questId],'任务不存在。');requireValue(q.status==='active','任务不在进行中。');evidence(a);requireValue(a.stepId,'需固定前置小任务身份。');if(a.failed){q.status='failed';q.conclusion=a.basis;w.phase='daily';}else if(!q.progress.includes(a.stepId)){requireValue(q.progress.length<q.level,'前置数量已满足，应进入最终环节。');q.progress.push(a.stepId);}result={progress:q.progress.length,required:q.level,status:q.status};break;}
       case 'quest.finish': {const q=requireValue(w.quests[a.questId],'任务不存在。');if(q.status==='complete'){result={reused:true,quest:q};break;}requireValue(q.status==='active'&&q.progress.length===q.level,'必须完成全部N项前置和最终目标。');evidence(a);requireValue(a.finalGoal===true&&!q.doomed,'必败任务原目标不能被虚构为完成。');for(const id of q.participants){const e=one(w,id);for(const p of Object.values(e.forms))for(const s of stats)p[s]+=q.level;refresh(e);}q.status='complete';q.conclusion=a.basis;q.rewards={};for(const [kind,chance]of [['item',80],['knowledge',50],['character',20]]){const r=await roll(`reward-${kind}`,{sides:100,purpose:`任务${q.id}的${kind}奖励`});q.rewards[kind]={roll:r,hit:r.raw[0]<=chance};}w.phase='daily';result={quest:q,rewards:q.rewards};break;}
-      case 'combat.start': {requireValue(a.id&&a.allies?.length&&a.enemies?.length&&a.enemies.includes(a.majorEnemyId),'战斗需固定身份、双方实际参战者和战前主要目标。');requireValue(!w.battles[a.id],'战斗已建立。');evidence(a);const participants=[...a.allies,...a.enemies];participants.forEach(id=>{const e=one(w,id);requireValue(!e.defeated&&!e.formalDefeat,'已败北单位不能无依据重新参战。');});w.battles[a.id]={...structuredClone(a),rounds:[],status:'active',before:Object.fromEntries(participants.map(id=>[id,{panel:structuredClone(base(one(w,id))),maxHp:effectPanel(w,one(w,id)).hp}]))};result={battle:w.battles[a.id]};break;}
+      case 'combat.start': {requireValue(a.id&&a.allies?.length&&a.enemies?.length&&a.enemies.includes(a.majorEnemyId),'战斗需固定身份、双方实际参战者和战前主要目标。');requireValue(!w.battles[a.id],'战斗已建立。');evidence(a);const participants=[...a.allies,...a.enemies];participants.forEach(id=>{const e=one(w,id);});w.battles[a.id]={...structuredClone(a),rounds:[],status:'active',before:Object.fromEntries(participants.map(id=>[id,{panel:structuredClone(base(one(w,id))),maxHp:effectPanel(w,one(w,id)).hp}]))};result={battle:w.battles[a.id]};break;}
       case 'combat.exchange': {const b=requireValue(w.battles[a.battleId],'战斗不存在。');requireValue(b.status==='active'&&b.rounds.length<5,'该五轮块已经结束。');requireValue(['defense','speed'].includes(a.defenseField),'投骰前必须明确对抗属性。');a.action??='战斗对抗';const round=b.rounds.length+1;requireValue(a.round===round,'必须按交锋顺序执行。');const sum=(ids,field)=>ids.reduce((n,id)=>n+effectPanel(w,one(w,id))[field],0),attackers=a.attackerSide||'allies';requireValue(['allies','enemies'].includes(attackers),'攻守关系无效。');const av=sum(b.allies,a.defenseField==='speed'?'speed':attackers==='allies'?'attack':'defense'),bv=sum(b.enemies,a.defenseField==='speed'?'speed':attackers==='enemies'?'attack':'defense'),am=ratioModifier(av,bv),bm=ratioModifier(bv,av);
         const alliedForm=b.allies.some(id=>one(w,id).form==='transformed')?0:-2,enemyDoom=activeQuest(w)?.doomed?10:0;
         const ar=await roll(`exchange-${round}-allies`,{purpose:`${a.action}：第${round}次交锋我方`,modifiers:[{source:'综合面板比例',value:am},{source:'未变身通用修正',value:alliedForm},...registeredModifiers(w,a.alliedEffects)]});

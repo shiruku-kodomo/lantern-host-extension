@@ -11,6 +11,7 @@ const operations = Object.keys(OP_RULE);
 const guides = {
   'definition.create':'id,name,type(character/skill/item/effect/policy/other),origin(canonical/generated),source{documentId,quote},fields,fieldSources,version,generationReason。character字段forms{normal/transformed:{hp,mp,attack,defense,speed}},eligible,personality,skills。技能cost{mp},effects[{field,mode(resource/fixed/percent/factor/restriction/periodic),amount,durationMinutes或durationExchanges,intervalMinutes或intervalExchanges(周期效果)}],cooldownMinutes,owner/form。正式定义引用原文；generated定义自动记录本轮输入或generationReason作为生成依据，缺失参数固定一次。',
   'entity.create':'id,definitionId,kind(player/character/troop/elite/boss/country-boss/world-boss),opening(bool仅初始主角),form,location,historical。自动真实初始化好感。',
+  'state.update':'changes[{collection,id,fields,remove?}],scene?,time?,nextStop?,summary?。主持可直接更新人物、定义、物品、情报、任务、战斗等记录，改判后修正后果，不要求先回退或正文证明。',
   'scene.update':'entities[],location?,summary?。描述场景及人物位置，无路线、费用或通行校验。',
   'entity.configure':'entityId,definitionId,basis。仅为尚无战斗面板的已存在人物补齐一次；不会覆盖已有数值。',
   'relationship.daily':'entityId,turnId,subjective(-20..20),basis。轮内一次。', 'relationship.propose':'entityId,turnStartAffection,customQuest?,basis。必须从轮初状态读取好感度。',
@@ -43,17 +44,18 @@ export function agentTools(role, plan=false, opening=null){
   if(role==='host')tools.push(fn('delegate','给确需专责处理的任务安排Agent。按依赖调用，避免把已完成内容再次分派复核。返回已执行结果及状态变化，不必再读取整局确认。',{role:{type:'string',enum:['judgment','analysis','intelligence']},task:string},['role','task']));
   if(!plan)tools.push(fn('ensure_entity','为首次出现的生成角色保存固定档案；已存在实体会复用，玩家占位档会一次性补齐。definition.fields.forms 必须有完整面板，不重建正式角色。',{id:string,name:string,kind:{type:'string',enum:['player','character','troop','elite','boss','country-boss','world-boss']},location:string,basis:string,definition:{type:'object',additionalProperties:true},reason:string},['id','name','kind','basis','definition','reason']));
   if(!plan)tools.push(fn('prepare_opening','开局批量落档：正式角色已自动登记。一次提供玩家身份、相识过程、固定生成面板（五项均为大于0的整数）及三个任务候选。脚本完成玩家补档、身份知情、任务保存与真实任务板骰子。hiddenFailure需投骰前固定。本工具不接任务、不执行任务；成功后直接汇总交接。',{...finishFields,player:openingPlayer,quests:{type:'array',items:openingQuest,minItems:3,maxItems:3}},['finish_turn',...(opening?.needsPlayer?['player']:[]),...(opening?.needsQuests?['quests']:[])]));
-  if(!plan)tools.push(fn('execute_inquiry','执行一个已经明确要求的单次询问调查。一次固定参与者、具体行动、1—120分钟耗时及成败分支的可观察记录。脚本自动应用当前任务修正，真实D20只投一次，然后推进时间并登记各人的知情。成功仅代表取得说法，不自动把传闻变为真实事实；失败记录不得夹带未获得的线索。不提前完成整个任务。',{...finishFields,purpose:string,actors:{type:'array',items:string,minItems:1},subjectId:string,subjectLabel:string,minutes:{type:'integer',minimum:1,maximum:120},success:string,failure:string},['purpose','actors','subjectId','minutes','success','failure','finish_turn']));
+  if(!plan)tools.push(fn('execute_inquiry','执行一个已经明确要求的单次询问调查。一次固定参与者、具体行动、正整数分钟耗时及成败分支的可观察记录。脚本自动应用当前任务修正，真实D20只投一次，然后推进时间并登记各人的知情。成功仅代表取得说法，不自动把传闻变为真实事实；失败记录不得夹带未获得的线索。不提前完成整个任务。',{...finishFields,purpose:string,actors:{type:'array',items:string,minItems:1},subjectId:string,subjectLabel:string,minutes:{type:'integer',minimum:1},success:string,failure:string},['purpose','actors','subjectId','minutes','success','failure','finish_turn']));
   if(!plan)tools.push(fn('execute_combat_block','执行一次五轮真实对抗，只提供判定参数，不写动作或过程。整块默认我方攻击对敌方防御，可选择整块攻守方或速度比较；特殊轮次用roundOverrides覆盖。脚本完成形态切换、十次真实骰子、胜次、资源变化及必要败北后果（包含growth.defeat），返回后不再重复结算。',{...finishFields,id:string,allies:{type:'array',items:string,minItems:1},enemies:{type:'array',items:string,minItems:1},majorEnemyId:string,basis:string,attackerSide:{type:'string',enum:['allies','enemies']},defenseField:{type:'string',enum:['defense','speed']},formSwitches:{type:'array',items:{type:'object',properties:{entityId:string,form:string},required:['entityId','form'],additionalProperties:false}},roundOverrides:{type:'array',maxItems:5,items:{type:'object',properties:{round:{type:'integer',minimum:1,maximum:5},attackerSide:{type:'string',enum:['allies','enemies']},defenseField:{type:'string',enum:['defense','speed']},alliedEffects:{type:'array',items:string},enemyEffects:{type:'array',items:string}},required:['round'],additionalProperties:false}}},['id','allies','enemies','majorEnemyId','basis','finish_turn']));
   if(!plan)tools.push(fn('execute_actions','批量执行本轮已经确定的机制操作。顺序执行并返回紧凑结果、检定和变化；相同ID恢复复用。不必为每条操作单独等待模型。',{...finishFields,operations:{type:'array',minItems:1,items:{type:'object',properties:{id:string,type:{type:'string',enum:operations},args:{type:'object',additionalProperties:true}},required:['id','type','args'],additionalProperties:false}}},['operations','finish_turn']));
   if(plan){if(role==='host')tools.push(fn('propose_plan','提交可执行计划卡，等待玩家点击执行。此调用不产生游戏结算。',{goal:string,steps:{type:'array',items:{type:'object',properties:{id:string,agent:{type:'string',enum:Object.keys(AGENT_PROMPTS)},task:string,dependencies:{type:'array',items:string},tools:{type:'array',items:string}},required:['id','agent','task','dependencies','tools'],additionalProperties:false}}},['goal','steps']));return tools;}
   tools.push(fn('mechanism','按主持安排执行机制，返回真实结果。各Agent可调用同一套机制，职责由提示词和任务分配决定。\n'+operations.map(k=>`${k}: ${guides[k]}`).join('\n'),{id:string,type:{type:'string',enum:operations},args:{type:'object',additionalProperties:true}},['id','type','args']));
+  tools.push(fn('reroll_dice','用户主动重roll：重新产生真实随机数，不要求回退状态、未结算状态或酒馆正文。可引用旧检定sourceId，或直接给新参数。旧骰子保留，每次明确调用产生新结果；断线恢复同一调用复用本次结果。',{sourceId:string,purpose:string,sides:{type:'integer',minimum:1},count:{type:'integer',minimum:1},modifiers:{type:'array',items:{type:'object',properties:{source:string,value:{type:'number'}},required:['source','value'],additionalProperties:false}}},[]));
   tools.push(fn('roll_dice','正式普通判定或数值取样。动作、用途、全部修正先确定，固定ID重试复用。已有检定请复用，独立新判定由主持安排。',{id:string,purpose:string,sides:{type:'integer',minimum:1},count:{type:'integer',minimum:1},modifiers:{type:'array',items:{type:'object',properties:{source:string,value:{type:'number'}},required:['source','value'],additionalProperties:false}}},['id','purpose','sides','count','modifiers']));
   return tools;
 }
 export function validatePlan(plan){
   if(Array.isArray(plan?.steps))for(const step of plan.steps)if(step.agent==='character')step.agent='host';
-  if(!plan?.goal?.trim()||!Array.isArray(plan.steps)||!plan.steps.length||plan.steps.length>30)throw new Error('计划需目标及1—30个步骤。');
+  if(!plan?.goal?.trim()||!Array.isArray(plan.steps)||!plan.steps.length)throw new Error('计划需目标及至少一个步骤。');
   const ids=new Set();for(const step of plan.steps){if(!step.id||ids.has(step.id)||!AGENT_PROMPTS[step.agent]||!step.task?.trim()||!Array.isArray(step.dependencies)||!Array.isArray(step.tools)||step.dependencies.some(id=>!ids.has(id)))throw new Error('计划步骤ID、Agent或前置依赖无效。');ids.add(step.id);}return plan;
 }
 
@@ -63,7 +65,7 @@ export class HostRuntime {
     const id=user.runId||`${branchId}:${user.id}`,key=`${branchKey(campaignId,branchId)}:${id}`,branch=await this.db.get(campaignId,branchId);
     let run=await this.store.read('runs',key);
     if(!run){run={id,campaignId,branchId,userId:user.id,input:user.content,status:'running',baseRevision:branch.world.revision,before:structuredClone(branch.world),world:structuredClone(branch.world),operations:[],receipts:{},conversations:{},trace:[],results:[],createdAt:Date.now(),planMode};}
-    if(confirmedPlan){validatePlan(confirmedPlan);if(run.baseRevision!==branch.world.revision)throw new Error('状态已经变化，请修改或重新生成计划后执行。');run.planMode=false;run.plan={...confirmedPlan,status:'executing'};run.conversations={};run.status='running';}
+    if(confirmedPlan){validatePlan(confirmedPlan);if(run.baseRevision!==branch.world.revision){run.baseRevision=branch.world.revision;run.before=structuredClone(branch.world);run.world=structuredClone(branch.world);run.operations=[];run.receipts={};}run.planMode=false;run.plan={...confirmedPlan,status:'executing'};run.conversations={};run.status='running';}
     const registry=new ContentRegistry(this.library),engine=new MechanismEngine({db:this.db,campaignId,branchId,registry,runId:id});
     const normalizeOperation=async args=>{
       let operation=args;run.turnStartAffection??=Object.fromEntries(Object.values(run.world.entities).map(e=>[e.id,run.before.entities[e.id]?.affection??e.affection]));
@@ -85,18 +87,18 @@ export class HostRuntime {
     if(!run.planMode&&!['committed','complete'].includes(run.status)){
       await autoRegisterCanonicalEntities({run,registry,engine,text:user.content||'',trace,signal});
     }
-    const instruction=`你只负责判定与任务阶段：不写人物对话、内心、动作、招式或战斗过程。当前选中的酒馆正文直接作为已发生剧情承接；不要求逐条额外证据；与主持保存数值或结论冲突时用主持结果。面向玩家的阶段进展用简短中文自然语言说明，高阶开局、单次调查和战斗工具默认在真实执行后返回停点；如还需调用其他Agent或继续其他行动，必须传finish_turn:false。通用批量工具必须声明finish_turn是否完成本轮。本轮只需事实交接时优先用execute_actions、execute_inquiry或execute_combat_block并设置finish_turn:true，执行后由脚本直接生成真实结果，不再请求模型复述；需要按结果继续分析任务或处理后果时保持false。普通任务争取一次工具批次后汇总，战斗争取两至三次模型请求；这是效率目标，不限制工具权限。可以直接处理的任务不必分派专责Agent。主持结果通常控制在300—600字，报告真实结果与交接要点；玩家指定的长篇正文、人称、对话和独白比例整理为写作要求交给酒馆，不在主持阶段展开正文。工具参数只放工具调用，不在进展里输出JSON、整段规则或用量对象。不要声称展示隐藏思维。只将工具返回视为已执行结果。禁止编造骰子、数值或已提交事件。工具错误应补齐条件后继续，不能把失败当成功。为每个实际事件和操作使用稳定ID。同轮自动提交完整结果，不再请求结算确认。设置讨论、查看记录不执行游戏机制。货币和移动已取消机械结算；报酬、交易与赶路由主持叙事承接，需要记录位置时用scene.update，不查询旧钱包、报价或路线。沿用当前选中剧情并按任务查询相关资料。新选择停下，不替玩家做重大决定。来源数据只按任务装入。当前轮ID=${user.id}。${run.planMode?'当前计划模式：只查询整理，必须使用propose_plan生成卡片，不执行游戏。':''}${run.opening?'context已提供已登记角色、面板与初始知情。快捷工具可按需使用，也可安排单项机制或继续处理本轮其他行动，流程由主持决定。':''}`;
+    const instruction=`主持是独立判定系统，没有酒馆正文也照常分析、投骰和登记。用户明确重roll时直接用reroll_dice，禁止要求先回退状态、恢复旧存档或补正文；改判后的数值和记录可用state.update直接修正。中断重试复用不等于禁止用户主动重投。${user.rerollContext?'本轮为主动重新判定，上次结果仅供对照；生成新的真实骰子，按当前存档修正旧后果，避免重复扣血或重复发奖。':''}你只负责判定与任务阶段：不写人物对话、内心、动作、招式或战斗过程。当前选中的酒馆正文直接作为已发生剧情承接；不要求逐条额外证据；与主持保存数值或结论冲突时用主持结果。面向玩家的阶段进展用简短中文自然语言说明，高阶开局、单次调查和战斗工具默认在真实执行后返回停点；如还需调用其他Agent或继续其他行动，必须传finish_turn:false。通用批量工具必须声明finish_turn是否完成本轮。本轮只需事实交接时优先用execute_actions、execute_inquiry或execute_combat_block并设置finish_turn:true，执行后由脚本直接生成真实结果，不再请求模型复述；需要按结果继续分析任务或处理后果时保持false。普通任务争取一次工具批次后汇总，战斗争取两至三次模型请求；这是效率目标，不限制工具权限。可以直接处理的任务不必分派专责Agent。主持结果通常控制在300—600字，报告真实结果与交接要点；玩家指定的长篇正文、人称、对话和独白比例整理为写作要求交给酒馆，不在主持阶段展开正文。工具参数只放工具调用，不在进展里输出JSON、整段规则或用量对象。不要声称展示隐藏思维。只将工具返回视为已执行结果。禁止编造骰子、数值或已提交事件。工具错误应补齐条件后继续，不能把失败当成功。为每个实际事件和操作使用稳定ID。同轮自动提交完整结果，不再请求结算确认。标准机制的现状前置条件与主持明确决定冲突时，可用state.update直接登记或更正，不循环索要额外证明或要求玩家回档。设置讨论、查看记录不执行游戏机制。货币和移动已取消机械结算；报酬、交易与赶路由主持叙事承接，需要记录位置时用scene.update，不查询旧钱包、报价或路线。沿用当前选中剧情并按任务查询相关资料。新选择停下，不替玩家做重大决定。来源数据只按任务装入。当前轮ID=${user.id}。${run.planMode?'当前计划模式：只查询整理，必须使用propose_plan生成卡片，不执行游戏。':''}${run.opening?'context已提供已登记角色、面板与初始知情。快捷工具可按需使用，也可安排单项机制或继续处理本轮其他行动，流程由主持决定。':''}`;
     const invoke=async(role,task,taskId,characterId,depth=0)=>{
-      signal?.throwIfAborted();if(depth>1)throw new Error('专责Agent不能继续分派Agent。');
+      signal?.throwIfAborted();
       if(role==='character')role='host'; // Resume an old character task under the host, preserving its taskId and receipts.
       const context=taskWorld(run.world,task);
       let conversation=run.conversations[taskId];
       if(conversation?.[0]?.role==='system')conversation[0].content=normalizeAgentPrompts(settings)[role]+'\n'+instruction+'\n'+(role==='host'?(settings.systemPrompt||''):'只执行本次专责任务并返回简短事实，不写正文。');
-      if(!conversation){const rolePrompt=normalizeAgentPrompts(settings)[role],taskInstruction=role==='host'?'子Agent回传的checks是已完成的真实检定，必须直接复用，不为相同行动换ID重投。':'你执行一个专责任务，不负责正文写作。不继承开场的人称、文风、长度和内心独白比例。直接执行所需工具，结束时用简短事实摘要报告结果和停点，不写大段角色演绎，不让主持再次为已判定行动投骰。';conversation=[{role:'system',content:`${rolePrompt}\n${instruction}\n${taskInstruction}\n${role==='host'?(settings.systemPrompt||''):''}`},...(role==='host'?messages:[]),{role:'user',content:JSON.stringify({task,context,opening:run.opening||null,confirmedPlan:run.plan?.status==='executing'?run.plan:null})}];run.conversations[taskId]=conversation;await trace({kind:'agent',agent:role,task,status:'running'});}
+      if(!conversation){const rolePrompt=normalizeAgentPrompts(settings)[role],taskInstruction=role==='host'?'子Agent回传的checks是真实检定。普通续传复用已有结果；玩家要求重新判定时产生新骰子，不要求状态回退。':'你执行一个专责任务，不负责正文写作。不继承开场的人称、文风、长度和内心独白比例。直接执行所需工具，结束时用简短事实摘要报告结果和停点，不写大段角色演绎，玩家要求重roll时直接新判定。';conversation=[{role:'system',content:`${rolePrompt}\n${instruction}\n${taskInstruction}\n${role==='host'?(settings.systemPrompt||''):''}`},...(role==='host'?messages:[]),{role:'user',content:JSON.stringify({task,context,opening:run.opening||null,confirmedPlan:run.plan?.status==='executing'?run.plan:null,reroll:user.rerollContext||null})}];run.conversations[taskId]=conversation;await trace({kind:'agent',agent:role,task,status:'running'});}
       const recovered=role==='host'&&!run.planMode?finishRequest(conversation,run.plan?.status==='executing'):null;if(recovered){run.finishRequested=recovered;await persist();return completedTurnSummary(run);}
-      for(let iteration=0;iteration<40;iteration++){
+      while(true){
         signal?.throwIfAborted();
-        const tools=agentTools(role,run.planMode||run.status==='committed'||run.status==='complete',run.opening).filter(t=>depth===0||t.function.name!=='delegate');
+        const tools=agentTools(role,run.planMode,run.opening);
         let last=conversation.at(-1);
         if(last.role==='assistant'&&!last.tool_calls?.length)return last.content||'';
         const assistant=[...conversation].reverse().find(m=>m.role==='assistant'&&m.tool_calls?.length);
@@ -118,16 +120,21 @@ export class HostRuntime {
                   case'read_fields':output=await registry.fields(args.id,args.paths);run.sources??={};run.sources[args.id]={id:output.id,path:output.path,version:output.version};break;
                   case'read_rules':output=await registry.rules(args.rules,{includeDependencies:false});break;
                   case'delegate':{if(role!=='host')throw new Error('只有主持可以分派任务。');const before=structuredClone(run.world),traceStart=run.trace.length,result=await invoke(args.role,args.task,receiptKey,args.characterId,depth+1);const checks=[...new Map(run.trace.slice(traceStart).filter(t=>t.tool==='roll_dice'&&t.status==='complete'&&t.result?.raw).map(t=>[t.result.id,t.result])).values()];output={agent:args.role,result,checks,changes:stateDiff(before,run.world).map(change=>({collection:change.collection,id:change.id,after:change.after&&typeof change.after==='object'?{...change.after,...(change.after.source?{source:{documentId:change.after.source.documentId,path:change.after.source.path,version:change.after.source.version}}:{})}:change.after}))};run.results.push(output);break;}
-                  case'execute_actions':{if(run.planMode||['committed','complete'].includes(run.status))throw new Error('当前为只读阶段。');output=await executeActions(run,engine,args,persist,normalizeOperation);break;}
+                  case'execute_actions':{if(run.planMode)throw new Error('当前为只读阶段。');output=await executeActions(run,engine,args,persist,normalizeOperation);break;}
                   case'ensure_entity':{
-                    if(run.planMode||['committed','complete'].includes(run.status))throw new Error('当前为只读阶段，确认计划后才能建立人物档案。');
+                    if(run.planMode)throw new Error('当前为只读阶段，确认计划后才能建立人物档案。');
                     const staged=structuredClone(run);output=await ensureEntity(staged,engine,args,user.content);Object.assign(run,{world:staged.world,operations:staged.operations,operationResults:staged.operationResults});break;
                   }
-                  case'prepare_opening':{if(run.planMode||['committed','complete'].includes(run.status))throw new Error('当前为只读阶段。');output=await prepareOpening(run,engine,args,user.content);break;}
-                  case'execute_inquiry':{if(run.planMode||['committed','complete'].includes(run.status))throw new Error('当前为只读阶段。');output=await executeInquiry(run,engine,args,user.content,persist);break;}
-                  case'execute_combat_block':{if(run.planMode||['committed','complete'].includes(run.status))throw new Error('当前为只读阶段。');output=await executeCombatBlock(run,engine,args,persist);break;}
+                  case'prepare_opening':{if(run.planMode)throw new Error('当前为只读阶段。');output=await prepareOpening(run,engine,args,user.content);break;}
+                  case'execute_inquiry':{if(run.planMode)throw new Error('当前为只读阶段。');output=await executeInquiry(run,engine,args,user.content,persist,receiptKey);break;}
+                  case'execute_combat_block':{if(run.planMode)throw new Error('当前为只读阶段。');output=await executeCombatBlock(run,engine,args,persist,receiptKey);break;}
                   case'propose_plan':{validatePlan(args);run.plan={...args,status:'pending',id:uid(),baseRevision:run.baseRevision};await this.store.write('plans',`${branchKey(campaignId,branchId)}:${run.plan.id}`,run.plan);output={plan:run.plan,message:'等待玩家点击执行；游戏状态未改变。'};break;}
-                  case'roll_dice':{if(run.planMode||['committed','complete'].includes(run.status))throw new Error('当前为只读阶段。');output=await dice(`${id}:${args.id}`,args);break;}
+                  case'reroll_dice':{
+                    const rolls=args.sourceId?await this.store.list('rolls',campaignId+':'):[],old=rolls.find(r=>r.id===args.sourceId||r.id.endsWith(':'+args.sourceId));
+                    const parameters={sides:args.sides||old?.parameters?.sides||20,count:args.count||old?.parameters?.count||1,purpose:args.purpose||old?.parameters?.purpose||'用户主动重新判定',modifiers:args.modifiers||old?.parameters?.modifiers||[]};
+                    output=await dice(id+':reroll:'+receiptKey,parameters);output={...output,rerolled:true,replaces:args.sourceId||null};break;
+                  }
+                  case'roll_dice':{if(run.planMode)throw new Error('当前为只读阶段。');output=await dice(`${id}:${args.id}`,args);break;}
                   case'mechanism':{
                     if(run.planMode)throw new Error('当前为计划模式，请先确认执行计划。');
                     if(!OP_RULE[args.type])throw new Error(`尚未注册的机制：${args.type}，请使用已有机制名称。`);
@@ -156,16 +163,18 @@ export class HostRuntime {
         const taskProfile=hostStepProfile(profile);
         const budget=contextBudget(taskProfile);
         let inputTokens=estimateTokens(conversation)+estimateTokens([{content:JSON.stringify(tools)}]);
-        if(settings.autoCompact!==false&&inputTokens>budget.inputLimit*.8&&conversation.length>6){
+        if(settings.autoCompact!==false&&conversation.length>=(run.compactionRetryAfter||0)&&inputTokens>budget.inputLimit*.8&&conversation.length>6){
           const cut=conversation.findLastIndex((m,i)=>i>1&&m.role==='assistant');
           if(cut>2){
+            try {
             const summary=await this.model.chat({...profile,maxTokens:Math.min(4096,Math.floor(budget.capacity/32)),temperature:.2},[{role:'system',content:'压缩以下Agent任务历史。保留任务、决定、来源ID/版本、工具结果和停点；不重新计算或猜测数字。正式数值保存在数据库，摘要不能覆盖数据库。只输出公开工作摘要。'},{role:'user',content:JSON.stringify(conversation.slice(1,cut))}],{signal});
             run.transcripts??=[];run.transcripts.push({taskId,messages:structuredClone(conversation.slice(1,cut)),at:Date.now()});
             conversation=[conversation[0],{role:'user',content:JSON.stringify({task,historySummary:summary,currentState:summarizeWorld(run.world),sourceVersions:run.sources})},...conversation.slice(cut)];run.conversations[taskId]=conversation;
             await trace({kind:'compaction',agent:role,status:'complete',summary});inputTokens=estimateTokens(conversation)+estimateTokens([{content:JSON.stringify(tools)}]);
+            } catch(error) {signal?.throwIfAborted();run.compactionWarning=error.message;run.compactionRetryAfter=conversation.length+6;await trace({kind:'compaction',agent:role,status:'failed',error:error.message});}
           }
         }
-        if(inputTokens>budget.inputLimit)throw new Error(`${role}任务上下文超出输入容量。检查点已保存，请减少本任务资料或提高模型容量后重试。`);
+        if(inputTokens>budget.inputLimit)run.contextEstimateWarning='估算超过配置容量，继续由模型接口处理';
         const requestAt=Date.now();await trace({kind:'request',agent:role,inputTokens,capacity:budget.capacity,estimated:true,status:'running'});
         let result;try{result=await this.model.turn(taskProfile,conversation,{signal,tools,onText:role==='host'?onText:undefined,onSummary:text=>onUpdate({...run,liveSummary:{agent:role,text}})});}catch(error){await trace({kind:'response',agent:role,durationMs:Date.now()-requestAt,inputTokens,status:'failed',error:error.message});throw error;}
         run.trace.push({id:uid(),at:Date.now(),kind:'response',agent:role,durationMs:Date.now()-requestAt,usage:result.usage,inputTokens,estimated:!result.usage,summary:result.summary,status:'complete'});
@@ -178,7 +187,7 @@ export class HostRuntime {
           await trace({kind:'agent',agent:role,task,status:'complete',summary:result.text});return result.text;
         }
       }
-      throw new Error('本任务达到40步运行上限。检查点已保存，可核对后继续。');
+
     };
     try{
       if(run.status==='complete'){

@@ -21,6 +21,10 @@ const upstream = createServer(async (req, res) => {
     const plan={goal:'验收计划',steps:[{id:'step-1',agent:'analysis',task:'读取本局资料',dependencies:[],tools:['read_state']}]};
     res.end(`data: ${JSON.stringify({choices:[{delta:{tool_calls:[{index:0,id:'qa-plan',type:'function',function:{name:'propose_plan',arguments:JSON.stringify(plan)}}]},finish_reason:'tool_calls'}]})}\n\ndata: [DONE]\n\n`);return;
   }
+  if(mode==='fresh-dice'&&!body.messages.some(m=>m.role==='tool')){
+    const args={purpose:'独立主持重新判定',sides:20,count:1,modifiers:[]};
+    res.end(`data: ${JSON.stringify({choices:[{delta:{tool_calls:[{index:0,id:'fresh-roll',type:'function',function:{name:'reroll_dice',arguments:JSON.stringify(args)}}]},finish_reason:'tool_calls'}]})}\n\ndata: [DONE]\n\n`);return;
+  }
   const reply = ['主持回复：已读取本轮讨论。', '', '## 本轮结果', '', '**重点**与引用：', '', '> 保留原始记录。', '', '| 项目 | 数值 |', '| --- | --- |', '| 示例 | 17 |', '', '```js', 'const result = 17;', '```', '', '<script>window.__lhUnsafe = true</script>'].join('\n');
   res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: reply }, index: 0 }] })}\n\n`);
   const finish=()=>{res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop', index: 0 }] })}\n\ndata: [DONE]\n\n`);res.end();};
@@ -295,6 +299,18 @@ try {
       await touchPage.screenshot({ path: fileURLToPath(new URL('mobile-touch-landscape.png', root)) });
       assert.ok(box.y >= -1 && box.y + box.height <= 391, JSON.stringify({box,viewport}));
     } finally { await touchContext.close(); }
+  });
+  await check('independent workspace without narration supports repeated fresh rerolls without restoring a branch',async()=>{
+    mode='fresh-dice';
+    await page.evaluate(async()=>{const a=await(await import('/scripts/extensions/third-party/lantern-host-extension/index.js')).enable();a._originalContext=a.bridge.context;a.bridge.context=()=>({...a._originalContext(),chatId:null,characterId:null,groupId:null,chat:[],chatMetadata:{}});await a.changeChat(true);a.session.mode='chat';a.settings.autoCompact=false;a.open();});
+    assert.equal(await page.evaluate(()=>LanternHost.getStatus().independent),true);
+    await host.locator('[data-tab=chat]').click();await host.locator('#lh-input').fill('没有正文，独立进行一次真实D20判定');
+    await host.locator('.lh-composer').getByRole('button',{name:'发送',exact:true}).click();await settled();
+    const inspect=()=>page.evaluate(async()=>{const a=await(await import('/scripts/extensions/third-party/lantern-host-extension/index.js')).enable(),binding=a.sessions.current(a.key).binding;return{...binding,rolls:(await a.storage.list('rolls',binding.campaignId+':')).map(r=>r.id),error:a.error};});
+    const first=await inspect();assert.equal(first.rolls.length,1);
+    for(let i=0;i<2;i++){await host.locator('.lh-assistant [data-action=retry]').last().click();await settled();}
+    const last=await inspect();assert.equal(last.campaignId,first.campaignId);assert.equal(last.branchId,first.branchId);assert.equal(new Set(last.rolls).size,3);assert.ok(!last.error,last.error);
+    await page.evaluate(async()=>{const a=await(await import('/scripts/extensions/third-party/lantern-host-extension/index.js')).enable();await a.persist();if(!a.bridge.settings().standaloneBinding?.backup)throw Error('independent backup index missing');a.bridge.context=a._originalContext;await a.changeChat(true);a.open();});mode='normal';
   });
   assert.deepEqual(errors.filter(e => /lantern|lh-/i.test(e)), []);
 } catch (error) {

@@ -17,7 +17,7 @@ export const OP_RULE = {
   'narration.select':'narration','companion.select':'narration','form.switch':'form','skill.use':'skill','effect.apply':'effect','effect.expire':'effect',
   'item.acquire':'item','item.transfer':'item','item.use':'item','knowledge.record':'knowledge','knowledge.share':'knowledge','knowledge.resolve':'knowledge',
   'item.equip':'item','entity.outcome':'troop',
-  'entity.configure':'cooperation','scene.update':'knowledge',
+  'entity.configure':'cooperation','state.update':'knowledge','scene.update':'knowledge',
   'combat.phase':'combat',
   'quest.create':'quest','quest.board':'quest','quest.accept':'quest','quest.progress':'quest','quest.finish':'reward',
   'combat.start':'combat','combat.exchange':'combat','combat.finish':'combat','growth.victory':'growth','growth.defeat':'growth',

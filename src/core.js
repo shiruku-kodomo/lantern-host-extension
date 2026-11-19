@@ -1,8 +1,9 @@
 import { hydrateConversation, compactionFor } from './conversation.js';
 import { normalizeAgentPrompts } from './agent-prompts.js';
 export const NAMESPACE = 'lantern_host';
+const RECENT_DEFAULT_PROMPT="你是《灯火之外》的主持，只负责任务与阶段分析、真实判定、所得和状态登记。按需安排判定、分析和情报Agent。当前选中的酒馆正文作为已发生剧情直接承接；与已保存的判定、数值或明确结论冲突时以主持结果为准。开局自动建档、缺失参数固定一次。对话、动作、内心独白与战斗过程由酒馆正文撰写。重大新选择交还玩家。";
 const PREVIOUS_DEFAULT_PROMPT = '你是《灯火之外》的主持。原策划决定机制，正式内容提供资料，本局数据库记录实际事实。按依赖分派判定、分析、情报与角色Agent；只用真实工具返回结算，不能编造骰子或数值。开场按规则自动建档；缺失内容通过生成工具补齐一次并保存。设置讨论、查看记录不产生游戏动作。重大选择交还玩家，正文由酒馆连接负责。';
-export const DEFAULT_PROMPT = "你是《灯火之外》的主持，只负责任务与阶段分析、真实判定、所得和状态登记。按需安排判定、分析和情报Agent。当前选中的酒馆正文作为已发生剧情直接承接；与已保存的判定、数值或明确结论冲突时以主持结果为准。开局自动建档、缺失参数固定一次。对话、动作、内心独白与战斗过程由酒馆正文撰写。重大新选择交还玩家。";
+export const DEFAULT_PROMPT = "你是《灯火之外》的独立主持。没有酒馆正文也照常判定和登记；玩家明确重roll直接重新投骰，不要求状态回退。只负责任务与阶段分析、真实判定、所得和状态登记。按需安排判定、分析和情报Agent。当前选中的酒馆正文作为已发生剧情直接承接；与已保存的判定、数值或明确结论冲突时以主持结果为准。开局自动建档、缺失参数固定一次。对话、动作、内心独白与战斗过程由酒馆正文撰写。重大新选择交还玩家。";
 export function emptySession() {
   return { version: 1, revision: 0, messages: [], draft: '', handoff: '', selectedDocs: [], contextEnabled: true, pending: null, updatedAt: 0, compactions: [] };
 }
@@ -17,8 +18,8 @@ export function readSession(raw) {
 export function normalizeSettings(raw = {}) {
   const legacyDefault='你是《灯火之外》的主持助手。与玩家讨论当前游戏，依据提供的策划资料和本局记录回答。明确区分资料事实与建议。当前阶段尚未接入正式多 Agent 判定与数值结算工具，不得宣称已经调用骰子、扣除物品或修改本局数值。';
   return {
-    version: 1, systemPrompt: typeof raw.systemPrompt === 'string' && raw.systemPrompt!==legacyDefault && raw.systemPrompt!==PREVIOUS_DEFAULT_PROMPT ? raw.systemPrompt : DEFAULT_PROMPT,
-    activeProfileId: raw.activeProfileId || '', contextLimit: Math.max(1, Math.min(200, Number(raw.contextLimit) || 30)),
+    version: 1, systemPrompt: typeof raw.systemPrompt === 'string' && raw.systemPrompt!==legacyDefault && ![PREVIOUS_DEFAULT_PROMPT,RECENT_DEFAULT_PROMPT].includes(raw.systemPrompt) ? raw.systemPrompt : DEFAULT_PROMPT,
+    standaloneBinding:raw.standaloneBinding?structuredClone(raw.standaloneBinding):undefined,activeProfileId: raw.activeProfileId || '', contextLimit: Math.max(1, Math.min(200, Number(raw.contextLimit) || 30)),
     autoCompact: raw.autoCompact !== false,
     agentPrompts: normalizeAgentPrompts(raw), agentPromptVersion: 2,
     disabledCommands: Array.isArray(raw.disabledCommands) ? [...raw.disabledCommands] : [],

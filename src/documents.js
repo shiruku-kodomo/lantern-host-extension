@@ -10,7 +10,7 @@ export class DocumentLibrary {
     this.imports = await this.store.get('documents') || [];
     return this;
   }
-  list() { return [...this.catalog.entries, ...this.imports]; }
+  list() { return [...(this.catalog?.entries||[]), ...(this.imports||[])]; }
   async part(name) {
     if (!this.parts.has(name)) {
       const pending = this.fetch(new URL(name, this.base)).then(async response => {

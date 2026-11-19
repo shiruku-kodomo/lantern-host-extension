@@ -12,7 +12,8 @@ export class TavernBridge {
     else if (response.status !== 404) throw new Error('无法确认酒馆账号，请重新登录后刷新。');
     this.settingsBase = JSON.stringify(this.settings() ?? null);
   }
-  key() { return currentChatKey(this.context(), this.account); }
+  hasChat() { return Boolean(currentChatKey(this.context(),this.account)); }
+  key() { return currentChatKey(this.context(), this.account)||JSON.stringify([this.account,'host','independent']); }
   headers() { return this.context().getRequestHeaders(); }
   async http(path, payload) {
     const result = await this.fetch(path, { method: payload === undefined ? 'GET' : 'POST', headers: this.headers(), ...(payload === undefined ? {} : { body: JSON.stringify(payload) }) });
@@ -25,6 +26,7 @@ export class TavernBridge {
     const before = await this.http('/api/settings/get', {});
     const latest = typeof before.settings === 'string' ? JSON.parse(before.settings) : before.settings;
     if (!latest || typeof latest !== 'object') throw new Error('酒馆设置读取失败，未覆盖现有配置。');
+    if(latest.extension_settings?.[NAMESPACE]?.standaloneBinding)settings={...settings,standaloneBinding:latest.extension_settings[NAMESPACE].standaloneBinding};
     const desired = JSON.stringify(settings), prior = JSON.stringify(latest.extension_settings?.[NAMESPACE] ?? null);
     if (prior !== (this.settingsBase ?? JSON.stringify(this.settings() ?? null)) && prior !== desired) throw new Error('主持配置已在其他窗口修改，请刷新后核对。当前输入仍保留。');
     latest.extension_settings ??= {};
@@ -46,10 +48,10 @@ export class TavernBridge {
       chatId: ctx.chatId, character: card?.name || '', player: ctx.name1 || '',
       persona: String(ctx.powerUserSettings?.persona_description || ''),
       description: String(data.description || ''), personality: String(data.personality || ''), scenario: String(data.scenario || ''),
-      messages: selectedHistory(ctx.chat, limit),
+      messages: this.hasChat()?selectedHistory(ctx.chat, limit):[],
     };
   }
-  savedSession() { return this.context().chatMetadata?.[NAMESPACE]; }
+  savedSession() { return this.hasChat()?this.context().chatMetadata?.[NAMESPACE]:this.settings()?.standaloneBinding; }
   async writeBackup(data) {
     const json = JSON.stringify(data), hash = await digest(json), name = `lantern-${data.branch.campaignId}-${data.branch.branchId}-${hash}.json`;
     if(json.length>512000){
@@ -97,6 +99,7 @@ export class TavernBridge {
     if(rows?.[0]?.chat_metadata?.world_info!==name)throw new Error('世界书绑定未确认保存。');
   }
   async readRemoteSession() {
+    if(!this.hasChat()){const data=await this.http('/api/settings/get',{}),settings=typeof data.settings==='string'?JSON.parse(data.settings):data.settings;return settings?.extension_settings?.[NAMESPACE]?.standaloneBinding??null;}
     const ctx = this.context();
     const rows = ctx.groupId
       ? await this.http('/api/chats/group/get', { id: ctx.chatId })
@@ -108,6 +111,12 @@ export class TavernBridge {
     const prior = await this.readRemoteSession();
     if (JSON.stringify(prior) === JSON.stringify(session)) return;
     if (JSON.stringify(prior) !== base) throw new Error('这段聊天的主持记录已在其他窗口修改。当前内容已保留，请先导出，再刷新核对，避免覆盖。');
+    if(!this.hasChat()){
+      const data=await this.http('/api/settings/get',{}),latest=typeof data.settings==='string'?JSON.parse(data.settings):data.settings;
+      latest.extension_settings??={};const own={...(latest.extension_settings[NAMESPACE]||{}),standaloneBinding:structuredClone(session)};latest.extension_settings[NAMESPACE]=own;
+      await this.http('/api/settings/save',latest);if(JSON.stringify(await this.readRemoteSession())!==JSON.stringify(session))throw new Error('独立主持备份索引尚未确认同步。');
+      this.context().extensionSettings[NAMESPACE]=own;this.settingsBase=JSON.stringify(own);return;
+    }
     if (this.key() !== key) throw new Error('聊天已切换，请回到原聊天重试同步。');
     const ctx = this.context();
     ctx.chatMetadata[NAMESPACE] = structuredClone(session);

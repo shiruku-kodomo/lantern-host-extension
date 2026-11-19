@@ -17,7 +17,7 @@ export class WorldbookProjection {
     const campaign=await this.store.read('campaigns',campaignId)||{id:campaignId};
     if(campaign.initialWorld!==undefined)return campaign;
     if(this.bridge.key()!==key)throw new Error('聊天已切换。');
-    let name=this.bridge.context().chatMetadata.world_info||null,data=null;
+    let name=this.bridge.context().chatMetadata?.world_info||null,data=null;
     if(name){data=await this.bridge.http('/api/worldinfo/get',{name});const owner=data.extensions?.lanternHost;
       if(owner){name=owner.initialName||null;data=owner.initialSnapshot||null;}}
     campaign.initialWorld={name,snapshot:data,version:data?await digest(data):null};
@@ -25,6 +25,7 @@ export class WorldbookProjection {
   }
   sync(...args){return this.queue(()=>this.syncCurrent(...args));}
   async syncCurrent(campaignId,branchId,key){
+    if(this.bridge.hasChat?.()===false)return{revision:(await this.db.get(campaignId,branchId)).world.revision,skipped:true,independent:true};
     if(this.bridge.key()!==key)throw new Error('聊天已切换，情报留待原局同步。');
     const branch=await this.db.get(campaignId,branchId);
     const pendingKey=`world:${branchKey(campaignId,branchId)}`;

@@ -52,10 +52,11 @@ export class GameDatabase {
   async fork(campaignId, branchId, userId, {after=false}={}) {
     const old = await this.get(campaignId, branchId);let snapshot = await this.store.read('snapshots', `${branchKey(campaignId, branchId)}:${userId}`);
     let parent=old.parentBranch;const visited=new Set([branchId]);while(!snapshot&&parent&&!visited.has(parent)){visited.add(parent);snapshot=await this.store.read('snapshots',`${branchKey(campaignId,parent)}:${userId}`);parent=(await this.get(campaignId,parent))?.parentBranch;}
-    if(!snapshot){const run=(await this.store.list('runs',`${branchKey(campaignId,branchId)}:`)).find(r=>r.userId===userId);if(run)snapshot={world:run.before};else if(old.world.revision===0)snapshot={world:old.world};}
-    if (!snapshot) throw new Error('这条历史行动没有可恢复的状态快照，不能在当前状态重新结算。');
-    if(after&&!snapshot.after)throw new Error('该轮尚无完整结算快照，不能恢复为已完成回合。');
-    const next = { ...old, branchId: uid(), worldbook:null, world: structuredClone(after?snapshot.after:snapshot.world), parentBranch: branchId, forkedAt: userId, revision: 0, createdAt: Date.now() };
+    if(!snapshot){const run=(await this.store.list('runs',`${branchKey(campaignId,branchId)}:`)).find(r=>r.userId===userId);if(run?.before)snapshot={world:run.before};else if(old.world.revision===0)snapshot={world:old.world};}
+    const currentStateFallback=!snapshot||(after&&!snapshot.after);
+    snapshot??={world:old.world,after:old.world};
+    if(after&&!snapshot.after)snapshot.after=old.world;
+    const next = { ...old, branchId: uid(), worldbook:null, world: structuredClone(after?snapshot.after:snapshot.world), parentBranch: branchId, currentStateFallback, forkedAt: userId, revision: 0, createdAt: Date.now() };
     await this.store.write('branches', branchKey(campaignId, next.branchId), next); return next;
   }
 }

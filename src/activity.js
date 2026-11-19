@@ -10,7 +10,7 @@ const OPERATIONS={
   'quest.create':'建立任务','quest.board':'生成任务板','quest.accept':'接取任务','quest.progress':'更新任务进度','quest.finish':'结算任务奖励',
   'combat.start':'建立战斗判定块','combat.exchange':'执行战斗交锋','combat.finish':'结算战斗结果','combat.phase':'承接Boss下一阶段',
   'growth.victory':'结算胜利成长','growth.defeat':'结算正式败北','time.advance':'推进游戏时间','rest.recover':'结算休整恢复',
-  'scene.update':'更新场景','world.register':'登记世界实体','world.progress':'检查世界阶段',
+  'state.update':'按主持决定更新记录','reroll_dice':'重新投骰','scene.update':'更新场景','world.register':'登记世界实体','world.progress':'检查世界阶段',
   'identity.observe':'登记身份识别','random.event':'判定本轮随机事件',
 };
 const compact=(text,max=110)=>{const value=String(text??'').replace(/\s+/g,' ').trim();return value.length>max?`${value.slice(0,max)}…`:value;};
@@ -35,7 +35,7 @@ export function toolPresentation(step){
     case'read_content':title=`阅读${fileName(r.path)||r.title||'资料原文'}`;detail=r.path||'读取正式资料及来源版本';break;
     case'read_fields':title=`读取${fileName(r.path)||'正式'}数值`;detail=r.fields?`已核对 ${Object.keys(r.fields).length} 个正式字段`:`查询 ${p.paths?.length||0} 个字段`;break;
     case'read_rules':title='核对机制规则';detail=Array.isArray(step.result)?`已读取 ${step.result.length} 项规则及关联机制`:'读取本轮所需规则';break;
-    case'roll_dice':title=`投掷 ${p.count||1}D${p.sides||20}`;detail=r.raw?`骰点 ${r.raw.join('、')} · 修正 ${r.modifierTotal>=0?'+':''}${r.modifierTotal} · 最终 ${r.total}${r.reused?' · 复用已存结果':''}`:compact(p.purpose);break;
+    case'reroll_dice':case'roll_dice':title=`${step.tool==='reroll_dice'?'重新投掷':'投掷'} ${p.count||r.parameters?.count||1}D${p.sides||r.parameters?.sides||20}`;detail=r.raw?`骰点 ${r.raw.join('、')} · 修正 ${r.modifierTotal>=0?'+':''}${r.modifierTotal} · 最终 ${r.total}${r.reused?' · 复用已存结果':''}`:compact(p.purpose);break;
     case'mechanism':title=OPERATIONS[p.type]||'执行游戏机制';
       if(r.alliedRoll&&r.enemyRoll)detail=`第${r.round}次交锋 · 我方 ${r.alliedRoll.raw.join('+')} ${r.alliedRoll.modifierTotal>=0?'+':'−'} ${Math.abs(r.alliedRoll.modifierTotal)} = ${r.alliedRoll.total}；对方 ${r.enemyRoll.total} · ${r.win?'我方胜':'对方胜'}`;
       else if(r.roll?.raw)detail=`骰点 ${r.roll.raw.join('、')} · 最终 ${r.roll.total}${typeof r.accepted==='boolean'?` · ${r.accepted?'接受':'拒绝'}`:''}`;
@@ -51,7 +51,7 @@ export function toolPresentation(step){
     case'autoregister':title='登记正式角色';detail=`${r.name||'人物'} · 从原文登记面板与初始情报`;break;
     case'propose_plan':title='整理可执行计划';detail=r.plan?`${r.plan.steps.length}个步骤 · 等待你确认`:'列出目标、步骤和依赖';break;
     case'commit':title='保存本轮结算';detail=`状态版本 ${r.revision??''}${r.reused?' · 已有事件复用':' · 已提交'}`;break;
-    case'worldbook':title='同步本局情报世界书';detail=step.error|| (r.skipped?'本轮没有新增需要注入的核心情报':`已核对投影版本 ${r.revision??''}`);break;
+    case'worldbook':title='同步本局情报世界书';detail=step.error|| (r.skipped?(r.independent?'独立主持已保存；当前未绑定酒馆聊天':'本轮没有新增需要注入的核心情报'):`已核对投影版本 ${r.revision??''}`);break;
     default:title='处理本轮任务';detail=compact(p.task||'');
   }
   if(step.error)detail=compact(step.error,180);
@@ -72,7 +72,7 @@ export function activityProjection(trace=[]){
     else if(t.kind==='agent'&&t.status==='complete'&&t.agent!=='host')note(t.id,t.agent,t.summary);
     else if(t.kind==='commentary')note(t.id,t.agent,t.text,'commentary');
     else if(t.kind==='response'&&t.summary)note(t.id,t.agent,t.summary,'public-summary');
-    else if(t.kind==='compaction')note(t.id,t.agent,t.status==='complete'?'已压缩较早过程，正式数值和原始记录保留。':'正在压缩较早过程。');
+    else if(t.kind==='compaction')note(t.id,t.agent,t.status==='complete'?'已压缩较早过程，正式数值和原始记录保留。':t.status==='failed'?'本次压缩未完成，保留原上下文继续执行。':'正在压缩较早过程。');
     else if(t.kind==='tool')addStep(t);
     else if(t.kind==='autoregister')addStep({...t,tool:'autoregister',parameters:{}});
     else if(['commit','worldbook'].includes(t.kind))addStep({...t,agent:'host',tool:t.kind,parameters:{}});
