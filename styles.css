@@ -199,3 +199,7 @@
   #lantern-host-root .lh-tool-group-list { margin-left:4px; padding-left:10px; }
   #lantern-host-root .lh-operation-label { white-space:normal; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
 }
+
+#lantern-host-root .lh-launcher-status{position:absolute;bottom:-12px;left:50%;transform:translateX(-50%);font-size:10px;line-height:18px;white-space:nowrap;padding:0 6px;border-radius:9px;background:var(--lh-solid-bg,#242321);color:var(--lh-text,#eee);border:1px solid currentColor;}
+#lantern-host-root .lh-launcher[data-state=complete]{border-color:#76bb93;}
+#lantern-host-root .lh-launcher[data-state=failed]{border-color:#e99484;}

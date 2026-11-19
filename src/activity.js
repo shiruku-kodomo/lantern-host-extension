@@ -1,5 +1,5 @@
 // User-facing progress is projected from recorded operations, never invented model reasoning.
-const ROLES={host:'主持',judgment:'判定',analysis:'分析',intelligence:'情报',character:'角色'};
+const ROLES={host:'主持',judgment:'判定',analysis:'分析',intelligence:'情报',character:'历史角色记录'};
 const OPERATIONS={
   'definition.create':'保存内容定义','entity.create':'建立人物档案','entity.configure':'补齐人物参数','entity.outcome':'登记战斗去向',
   'relationship.daily':'结算日常互动','relationship.propose':'进行提议判定','cooperation.accept':'登记正式合作',

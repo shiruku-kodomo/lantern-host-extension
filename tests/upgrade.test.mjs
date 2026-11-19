@@ -21,7 +21,7 @@ test('old IDB data is physically migrated; restored snapshots and checkpoints ca
   const run=migrateRecord('runs',{status:'running',world,operations:[{id:'paid',type:'currency.transfer'}],conversations:{host:[{role:'assistant',tool_calls:[{id:'pending',function:{name:'mechanism',arguments:JSON.stringify({type:'movement.travel'})}}]}]}});assert.equal(run.operations.length,0);assert.equal(run.cancelledOperations[0].status,'cancelled');assert.ok(run.conversations.host.at(-1).content.includes('cancelled'));
 });
 test('all agents have batching and scene recording; currency and movement operations are absent',()=>{
-  for(const role of ['host','judgment','analysis','intelligence','character']){const tools=agentTools(role);assert.ok(tools.some(t=>t.function.name==='execute_actions'));const types=tools.find(t=>t.function.name==='mechanism').function.parameters.properties.type.enum;assert.ok(types.includes('scene.update'));for(const type of RETIRED_OPERATIONS)assert.ok(!types.includes(type));}
+  for(const role of ['host','judgment','analysis','intelligence']){const tools=agentTools(role);assert.ok(tools.some(t=>t.function.name==='execute_actions'));const types=tools.find(t=>t.function.name==='mechanism').function.parameters.properties.type.enum;assert.ok(types.includes('scene.update'));for(const type of RETIRED_OPERATIONS)assert.ok(!types.includes(type));}
 });
 test('batch recovery saves completed operations and reuses them after an interrupted following step',async()=>{
   const run={world:{nextStop:'选择'},operations:[]};let first=0,fail=true,checkpoints=0;

@@ -10,7 +10,7 @@ const { chromium } = await import(process.env.PLAYWRIGHT_MODULE || 'playwright')
 if (!process.env.TAVERN_URL) throw new Error('Set TAVERN_URL to an isolated QA SillyTavern instance before running integration tests.');
 const results = [], requests = [], root = new URL('../test-results/', import.meta.url);
 await mkdir(root, { recursive: true });
-let mode = 'normal';
+let mode = 'normal',heldFinish;
 const upstream = createServer(async (req, res) => {
   if (req.url.endsWith('/models')) { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ data: [{ id: 'local-qa-model' }, { id: 'manual-qa-model' }] })); return; }
   let raw = ''; for await (const chunk of req) raw += chunk;
@@ -23,7 +23,8 @@ const upstream = createServer(async (req, res) => {
   }
   const reply = ['主持回复：已读取本轮讨论。', '', '## 本轮结果', '', '**重点**与引用：', '', '> 保留原始记录。', '', '| 项目 | 数值 |', '| --- | --- |', '| 示例 | 17 |', '', '```js', 'const result = 17;', '```', '', '<script>window.__lhUnsafe = true</script>'].join('\n');
   res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: reply }, index: 0 }] })}\n\n`);
-  const timer = setTimeout(() => { res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop', index: 0 }] })}\n\ndata: [DONE]\n\n`); res.end(); }, mode === 'slow' ? 15000 : 150);
+  const finish=()=>{res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop', index: 0 }] })}\n\ndata: [DONE]\n\n`);res.end();};
+  let timer;if(mode==='keepalive')heldFinish=finish;else timer=setTimeout(finish,mode==='slow'?15000:150);
   res.on('close', () => clearTimeout(timer));
 });
 upstream.listen(0, '127.0.0.1'); await once(upstream, 'listening');
@@ -232,6 +233,29 @@ try {
     await host.locator('.lh-composer').getByRole('button', { name: '发送', exact: true }).click(); await settled();
     const payload = JSON.stringify(requests.at(-1)); assert.ok(payload.includes('请总结：本轮')); assert.ok(payload.includes('计划模式')); assert.ok(payload.includes('完成当前任务'));
   });
+  await check('minimize, close and Esc keep a single request alive, preserve reading position, and accept same-chat messages',async()=>{
+    await host.locator('[data-tab=chat]').click();await page.evaluate(async()=>{const a=await(await import('/scripts/extensions/third-party/lantern-host-extension/index.js')).enable();a.session.mode='chat';a.settings.autoCompact=false;a.render();});mode='keepalive';
+    for(const control of ['minimize','close','escape']){
+      const requestCount=requests.length;heldFinish=null;
+      await host.locator('#lh-input').fill('收起保活测试 '+control);await host.locator('.lh-composer').getByRole('button',{name:'发送',exact:true}).click();await host.locator('.lh-assistant').last().locator('.lh-message-text').getByText('主持回复：已读取本轮讨论。').waitFor();
+      await host.locator('.lh-messages').evaluate(n=>{n.scrollTop=120;});const top=await host.locator('.lh-messages').evaluate(n=>n.scrollTop);
+      if(control==='escape')await page.keyboard.press('Escape');else await host.locator('[data-window='+control+']').click();
+      assert.equal(await page.evaluate(()=>LanternHost.getStatus().busy),true);assert.equal(await host.locator('.lh-launcher').getAttribute('data-state'),'running');
+      await page.evaluate(async()=>{const c=SillyTavern.getContext();c.chat.push({name:'QA',is_user:false,mes:'正文新增：店主说仓库今晚停电。'});await c.eventSource.emit(c.eventTypes.MESSAGE_RECEIVED,c.chat.length-1);await c.eventSource.emit(c.eventTypes.CHAT_CHANGED,c.chatId);});
+      assert.equal(await page.evaluate(()=>LanternHost.getStatus().busy),true);assert.equal(requests.length,requestCount+1);assert.ok(heldFinish);heldFinish();await settled();
+      assert.ok(['complete','saving'].includes(await host.locator('.lh-launcher').getAttribute('data-state')));await host.locator('.lh-launcher').click();
+      assert.equal(await host.locator('.lh-assistant').last().locator('header span').textContent(),'');assert.ok(Math.abs(await host.locator('.lh-messages').evaluate(n=>n.scrollTop)-top)<2);assert.equal(requests.length,requestCount+1);
+    }mode='normal';
+  });
+  await check('reloading a hidden running workspace restores its checkpoint and resumes the same turn',async()=>{
+    mode='keepalive';heldFinish=null;await host.locator('#lh-input').fill('暂停页面后恢复同一轮');await host.locator('.lh-composer').getByRole('button',{name:'发送',exact:true}).click();await host.locator('.lh-assistant').last().locator('.lh-message-text').getByText('主持回复：已读取本轮讨论。').waitFor();
+    const turn=await page.evaluate(async()=>{const a=await(await import('/scripts/extensions/third-party/lantern-host-extension/index.js')).enable();return{userId:a.session.messages.at(-2).id,binding:a.sessions.current(a.key).binding,chatId:SillyTavern.getContext().chatId};});
+    await host.locator('[data-window=close]').click();await page.waitForFunction(async()=>{const a=await(await import('/scripts/extensions/third-party/lantern-host-extension/index.js')).enable();return !a.syncing;});await page.evaluate(()=>window.dispatchEvent(new Event('pagehide')));
+    await page.reload({waitUntil:'domcontentloaded'});await page.waitForFunction(()=>!!window.LanternHost);await page.evaluate(async({avatar,chatId})=>{const c=SillyTavern.getContext();await c.selectCharacterById(c.characters.findIndex(x=>x.avatar===avatar));await c.openCharacterChat(chatId);LanternHost.open();},{avatar,chatId:turn.chatId});
+    await page.waitForFunction(async()=>{const a=await(await import('/scripts/extensions/third-party/lantern-host-extension/index.js')).enable();return ['interrupted','failed','cancelled'].includes(a.session.messages.at(-1)?.status);});mode='normal';await host.locator('[data-action=retry]').last().click();await settled();
+    const restored=await page.evaluate(async()=>{const a=await(await import('/scripts/extensions/third-party/lantern-host-extension/index.js')).enable();return{userId:a.session.messages.at(-2).id,binding:a.sessions.current(a.key).binding,status:a.session.messages.at(-1).status};});assert.equal(restored.userId,turn.userId);assert.equal(restored.binding.campaignId,turn.binding.campaignId);assert.equal(restored.binding.branchId,turn.binding.branchId);assert.equal(restored.status,'complete');
+  });
+  await check('only the four current agent prompts are editable',async()=>{await host.locator('[data-tab=settings]').click();assert.equal(await host.locator('[data-agent-prompt]').count(),4);assert.equal(await host.locator('[data-agent-prompt=character]').count(),0);await host.locator('[data-tab=chat]').click();});
   await check('mobile portrait, keyboard-sized viewport, minimize/restore and landscape', async () => {
     for (const [width, height, label] of [[390,844,'mobile-portrait.png'], [390,440,'mobile-keyboard.png'], [844,390,'mobile-landscape.png']]) {
       await page.setViewportSize({ width, height }); await page.waitForTimeout(250);
@@ -256,7 +280,7 @@ try {
     const touchContext = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2 });
     try {
       const touchPage = await touchContext.newPage();
-      await touchPage.goto(process.env.TAVERN_URL || 'http://127.0.0.1:8000/', { waitUntil: 'domcontentloaded' });
+      await serveSource(touchPage);await touchPage.goto(process.env.TAVERN_URL || 'http://127.0.0.1:8000/', { waitUntil: 'domcontentloaded' });
       await touchPage.waitForFunction(() => !!window.LanternHost);
       await touchPage.evaluate(async avatar => { const ctx = SillyTavern.getContext(); await ctx.selectCharacterById(ctx.characters.findIndex(c => c.avatar === avatar)); LanternHost.open(); }, avatar);
       await touchPage.waitForTimeout(800);

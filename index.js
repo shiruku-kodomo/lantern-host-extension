@@ -12,7 +12,7 @@ import { ContextManager, contextBudget, estimateTokens, modelCapacity, hostStepP
 import { BUILTIN_COMMANDS, commandList, parseCommand, expandCommand, updateGoal, validateCommands } from './src/commands.js';
 import { renderMarkdown } from './src/markdown.js';
 import { DocumentLibrary } from './src/documents.js';
-import { normalizeSettings, emptySession, requestMessages, contextSignature } from './src/core.js';
+import { normalizeSettings, emptySession, requestMessages } from './src/core.js';
 
 const ROOT_ID = 'lantern-host-root';
 const escape = value => String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
@@ -40,12 +40,12 @@ class HostWorkspace {
     this.syncAppearance();
     this.cleanups.push(this.bridge.on('SETTINGS_UPDATED', () => this.syncAppearance()));
     this.cleanups.push(this.bridge.on('CHAT_CHANGED', () => this.changeChat()));
-    this.cleanups.push(this.bridge.on('CHAT_RENAMED', () => this.changeChat()));
+    this.cleanups.push(this.bridge.on('CHAT_RENAMED', () => {if(this.busy){this.pendingChatChange=true;this.cache();}else this.changeChat();}));
     this.cleanups.push(this.bridge.on('CHAT_CREATED', () => this.newChatBinding()));
     this.cleanups.push(this.bridge.on('GROUP_CHAT_CREATED', () => this.newChatBinding()));
     for (const event of ['MESSAGE_SWIPED', 'MESSAGE_EDITED', 'MESSAGE_DELETED', 'MESSAGE_RECEIVED', 'MESSAGE_SENT']) {
       this.cleanups.push(this.bridge.on(event, () => {
-        if (this.busy && contextSignature(this.bridge.context()) !== this.runningContext) this.stop('酒馆上下文已变化，本次生成已停止，请核对后重试。');
+        if(!this.workspaceVisible())return; // The active run keeps its original selected-context snapshot.
         this.renderContextBadge();
       }));
     }
@@ -58,20 +58,29 @@ class HostWorkspace {
     window.visualViewport?.addEventListener('resize', viewport);
     window.visualViewport?.addEventListener('scroll', viewport);
     this.cleanups.push(() => { window.visualViewport?.removeEventListener('resize', viewport); window.visualViewport?.removeEventListener('scroll', viewport); });
+    const lifecycle=()=>{if(document.hidden){this.rememberReading();this.cache();}else{this.render();}};
+    const pagehide=()=>{this.rememberReading();this.cache();};
+    document.addEventListener('visibilitychange',lifecycle);window.addEventListener('pagehide',pagehide);window.addEventListener('pageshow',lifecycle);
+    this.cleanups.push(()=>{document.removeEventListener('visibilitychange',lifecycle);window.removeEventListener('pagehide',pagehide);window.removeEventListener('pageshow',lifecycle);});
     const unload = event => { if (this.saveError || this.settingsDirty || this.syncing || this.draftTimer) { event.preventDefault(); event.returnValue = ''; } };
     window.addEventListener('beforeunload', unload); this.cleanups.push(() => window.removeEventListener('beforeunload', unload));
     this.library = new DocumentLibrary(this.storage);
     try { await this.library.init(); } catch (error) { this.libraryError = error.message; }
     this.runtime = new HostRuntime({ db: this.sessions.db, store: this.storage, model: this.model, library: this.library, projection: this.projection });
     await this.changeChat();
+    const rawSettings=this.bridge.settings();
+    if(rawSettings?.agentPrompts?.character!==undefined||rawSettings?.agentPromptModes?.character!==undefined){
+      const cleaned=structuredClone(rawSettings);if(cleaned.agentPrompts)delete cleaned.agentPrompts.character;if(cleaned.agentPromptModes)delete cleaned.agentPromptModes.character;
+      try{await this.bridge.saveSettings(cleaned);}catch(error){this.saveError='旧角色Agent配置清理待重试：'+this.redact(error.message);}
+    }
     this.render();
   }
   buildShell() {
     this.root = document.createElement('div'); this.root.id = ROOT_ID;
-    this.root.innerHTML = `<button class="lh-launcher" aria-label="打开主持窗口" title="打开主持 · 可拖动">灯</button>
+    this.root.innerHTML = `<button class="lh-launcher" aria-label="打开主持窗口" title="打开主持 · 可拖动"><span>灯</span><span class="lh-launcher-status" aria-live="polite"></span></button>
       <dialog class="lh-backdrop" aria-label="灯火之外主持" hidden><section class="lh-panel" tabindex="-1">
       <header class="lh-header"><div class="lh-brand"><span class="lh-mark">灯</span><div><strong>灯火之外</strong><small>主持</small></div></div><span class="lh-chat-name"></span><div class="lh-window-actions">
-      <button data-window="minimize" title="收起" aria-label="收起主持">${icon('minimize')}</button><button data-window="expand" title="全屏" aria-label="切换全屏">${icon('expand')}</button><button data-window="close" title="关闭" aria-label="关闭主持">${icon('close')}</button></div></header>
+      <button data-window="stop" title="停止当前任务" aria-label="停止主持任务" disabled>停止</button><button data-window="minimize" title="收起" aria-label="收起主持">${icon('minimize')}</button><button data-window="expand" title="全屏" aria-label="切换全屏">${icon('expand')}</button><button data-window="close" title="关闭" aria-label="关闭主持">${icon('close')}</button></div></header>
       <nav class="lh-nav" aria-label="主持工作区"><button data-tab="chat">${icon('chat')} 对话</button><button data-tab="documents">${icon('files')} 资料</button><button data-tab="settings">${icon('model')} 模型与提示词</button></nav>
       <div class="lh-alert" role="alert" hidden></div><main class="lh-main"></main><footer class="lh-footer"><span class="lh-save-status" role="status"></span><button data-action="retry-save" hidden>重试保存</button><button data-action="archives">每轮存档</button><button data-action="export">导出本局</button></footer>
       </section></dialog>`;
@@ -84,6 +93,7 @@ class HostWorkspace {
     this.root.addEventListener('click', event => {
       const button = event.target.closest('button');
       if (!button) return;
+      if (button.dataset.window === 'stop') return this.stop();
       if (button.dataset.window === 'close') return this.close();
       if (button.dataset.window === 'minimize') return this.close(true);
       if (button.dataset.window === 'expand') return this.root.querySelector('.lh-panel').classList.toggle('lh-fullscreen');
@@ -115,12 +125,14 @@ class HostWorkspace {
     const channels = getComputedStyle(probe).color.match(/[\d.]+/g); probe.remove();
     this.root.style.setProperty('--lh-solid-bg', channels?.length >= 3 ? `rgb(${channels.slice(0,3).join(',')})` : '#242321');
   }
+  workspaceVisible(){return !!this.root?.querySelector('.lh-backdrop')?.open&&!document.hidden;}
+  rememberReading(){const log=this.root?.querySelector('.lh-messages');if(log&&this.workspaceVisible())this.reading={key:this.key,top:log.scrollTop,atBottom:log.scrollHeight-log.scrollTop-log.clientHeight<48};}
   open() {
     this.previousFocus = document.activeElement;
     const dialog = this.root.querySelector('.lh-backdrop'); dialog.hidden = false;
     if (!dialog.open) dialog.showModal();
     this.root.querySelector('.lh-launcher').hidden = true;
-    this.render(); this.root.querySelector('.lh-panel').focus();
+    this.restoringScroll=this.reading;this.render(); this.root.querySelector('.lh-panel').focus();
     this.checkUpdates().catch(()=>{});
   }
   async checkUpdates(force=false) {
@@ -136,7 +148,7 @@ class HostWorkspace {
     const install=this.root.querySelector('[data-action="update-install"]');if(install){install.hidden=!this.updateStatus?.managed||this.updateStatus.state==='latest';install.disabled=!!this.updateInstalling;}
   }
   close(minimize = false) {
-    if (!minimize) this.stop();
+    this.rememberReading();
     const dialog = this.root.querySelector('.lh-backdrop'); if (dialog.open) dialog.close(); dialog.hidden = true;
     this.root.querySelector('.lh-launcher').hidden = false;
     this.previousFocus?.focus?.();
@@ -172,8 +184,10 @@ class HostWorkspace {
     }
     return result;
   }
-  async changeChat() {
-    this.stop();
+  async changeChat(force=false) {
+    if(!force&&this.key===this.bridge.key()&&(this.loading||!this.loadFailed)){if(this.workspaceVisible())this.renderContextBadge();return;}
+    if(this.busy&&this.pendingChatChange){if(this.bridge.savedSession()?.campaignId===this.sessions.current(this.key).binding.campaignId)return;this.pendingChatChange=false;}
+    this.cache();this.stop();
     clearTimeout(this.draftTimer);
     this.draftTimer = null;
     const generation = ++this.loadGeneration;
@@ -229,7 +243,8 @@ class HostWorkspace {
     node.textContent = this.saveError ? `${this.localSaveFailed?'本地尚未保存，请保留窗口并导出':'本地已保存，备份或同步待重试'}：${this.saveError}` : (this.syncing || this.draftTimer ? '本地保存 / 备份同步中…' : this.key ? '本局已保存' : '先在酒馆打开一段聊天');
     node.classList.toggle('lh-error-text', Boolean(this.saveError));
     this.root.querySelector('[data-action="retry-save"]').hidden = !this.saveError;
-    const launcher=this.root.querySelector('.lh-launcher');launcher.dataset.state=this.busy?'running':this.saveError?'pending':'saved';launcher.title=this.busy?'主持运行中':this.saveError?'本局保存或同步待重试':'打开主持 · 可拖动';
+    const launcher=this.root.querySelector('.lh-launcher'),last=this.session.messages.at(-1),state=this.busy?'running':last?.status==='failed'?'failed':this.saveError?'pending':this.syncing?'saving':last?.status==='complete'?'complete':last?.status==='interrupted'||last?.status==='cancelled'?'paused':'saved';
+    const label={running:'运行中',failed:'未完成',pending:'待同步',saving:'保存中',complete:'已完成',paused:'已暂停',saved:'已保存'}[state];launcher.dataset.state=state;launcher.title='主持'+label+' · 点击恢复窗口';launcher.querySelector('.lh-launcher-status').textContent=label;this.root.querySelector('[data-window="stop"]').disabled=!this.busy;
   }
   renderAlert() {
     const node = this.root.querySelector('.lh-alert'); node.hidden = !this.error;
@@ -237,6 +252,7 @@ class HostWorkspace {
   }
   render() {
     if (!this.root) return;
+    if(!this.workspaceVisible()){this.renderStatus();return;}
     for (const button of this.root.querySelectorAll('[data-tab]')) button.setAttribute('aria-current', button.dataset.tab === this.tab ? 'page' : 'false');
     const snapshot = this.bridge.snapshot(0);
     this.root.querySelector('.lh-chat-name').textContent = snapshot.character || '尚未打开聊天';
@@ -249,7 +265,8 @@ class HostWorkspace {
   renderChat() {
     const main = this.root.querySelector('.lh-main');
     const previousLog=main.querySelector('.lh-messages');
-    const previousScroll=previousLog?.dataset.chatKey===this.key?{top:previousLog.scrollTop,atBottom:previousLog.scrollHeight-previousLog.scrollTop-previousLog.clientHeight<48}:null;
+    const previousScroll=this.restoringScroll?.key===this.key?this.restoringScroll:previousLog?.dataset.chatKey===this.key?{top:previousLog.scrollTop,atBottom:previousLog.scrollHeight-previousLog.scrollTop-previousLog.clientHeight<48}:null;
+    this.restoringScroll=null;
     main.innerHTML = `<section class="lh-chat"><div class="lh-context-line"><label><input type="checkbox" id="lh-context-toggle" ${this.session.contextEnabled ? 'checked' : ''}>带入酒馆上下文</label><button data-action="context" class="lh-context-count"></button><span class="lh-model-label">${escape(this.profile()?.model || '未连接模型')}</span></div>
       <div class="lh-budget-line"><span class="lh-budget" role="status"></span><button data-action="compact" ${this.busy || !this.key ? 'disabled' : ''}>压缩较早对话</button></div><div class="lh-messages" role="log" aria-label="主持对话"></div>
       <div class="lh-selected-docs"></div><div class="lh-session-mode"></div><form class="lh-composer"><div class="lh-command-menu" role="listbox" aria-label="主持指令" hidden></div><textarea id="lh-input" rows="2" aria-label="给主持的消息" placeholder="和主持讨论这一轮，或输入 / 使用指令…" ${!this.key || this.loading || this.loadFailed ? 'disabled' : ''}>${escape(this.session.draft)}</textarea><button class="lh-primary" type="submit" ${!this.key || this.loading || this.loadFailed ? 'disabled' : ''}>${this.busy ? '停止' : '发送'}</button></form></section>`;
@@ -367,7 +384,6 @@ class HostWorkspace {
     user.gameBranchId??=binding.branchId;assistant.gameBranchId=binding.branchId;
     this.busy = true; this.error = ''; this.controller = new AbortController();
     const controller = this.controller, key = this.key, generation = ++this.generation;
-    this.runningContext = contextSignature(this.bridge.context());
     this.session.pending = { messageId: assistant.id, startedAt: Date.now(), profileId: profile.id };
     const requestSession = structuredClone(this.session);
     if(confirmedPlan)requestSession.mode='chat';
@@ -392,12 +408,12 @@ class HostWorkspace {
       this.runtime.chatKey=key;
       const run = await this.runtime.execute({ campaignId:binding.campaignId,branchId:binding.branchId,user,profile:structuredClone(profile),settings:requestSettings,messages:prepared.messages,planMode:requestSession.mode==='plan',confirmedPlan,
         signal: controller.signal,
-        onUpdate: state=>{if(generation!==this.generation||this.key!==key)return;assistant.runId=state.id;assistant.trace=state.trace;assistant.plan=state.plan;assistant.commit=state.commit;assistant.worldbook=state.worldbook;assistant.worldbookError=state.worldbookError;const row=this.root.querySelector(`[data-message-id="${assistant.id}"]`);if(row)this.renderRun(row,assistant);this.renderStatus();},
+        onUpdate: state=>{if(generation!==this.generation||this.key!==key)return;assistant.runId=state.id;assistant.trace=state.trace;assistant.plan=state.plan;assistant.commit=state.commit;assistant.worldbook=state.worldbook;assistant.worldbookError=state.worldbookError;const row=this.root.querySelector(`[data-message-id="${assistant.id}"]`);if(row&&this.workspaceVisible())this.renderRun(row,assistant);this.renderStatus();},
         onText: text => {
           if (generation !== this.generation || this.key !== key) return;
           assistant.content = text;
           const node = this.root.querySelector(`[data-message-id="${assistant.id}"] .lh-message-text`);
-          if (node) {const log=node.closest('.lh-messages'),top=log.scrollTop,follow=log.scrollHeight-log.scrollTop-log.clientHeight<48;this.markdown(node,text);log.scrollTop=follow?log.scrollHeight:top;}
+          if (node&&this.workspaceVisible()) {const log=node.closest('.lh-messages'),top=log.scrollTop,follow=log.scrollHeight-log.scrollTop-log.clientHeight<48;this.markdown(node,text);log.scrollTop=follow?log.scrollHeight:top;}
           if (Date.now() - lastCheckpoint > 1000) { lastCheckpoint = Date.now(); this.cache(); }
         },
       });
@@ -413,6 +429,7 @@ class HostWorkspace {
       if (generation === this.generation && this.key === key) {
         this.busy = false; this.controller = null; this.runPhase = ''; this.session.pending = null;
         await this.persist().catch(() => {}); this.render();
+        if(this.pendingChatChange){this.pendingChatChange=false;await this.changeChat();}
       }
     }
   }
@@ -422,7 +439,7 @@ class HostWorkspace {
     let box=row.querySelector('.lh-run');if(!box){box=document.createElement('section');box.className='lh-run';box.append(Object.assign(document.createElement('div'),{className:'lh-plan-slot'}),Object.assign(document.createElement('div'),{className:'lh-activity'}),Object.assign(document.createElement('p'),{className:'lh-worldbook-warning lh-message-error'}));row.querySelector('.lh-message-text').before(box);}
     const viewKey=`${this.key}:${message.id}`;if(!this.activityViews.has(viewKey))this.activityViews.set(viewKey,{open:new Map()});
     const planSlot=box.querySelector('.lh-plan-slot');
-    const signature=JSON.stringify([message.plan,!!this.busy]);if(planSlot.dataset.signature!==signature){planSlot.dataset.signature=signature;planSlot.innerHTML='';if(message.plan){const plan=message.plan,role={host:'主持',analysis:'分析',judgment:'判定',intelligence:'情报',character:'角色'};planSlot.innerHTML=`<div class="lh-plan-card"><strong>${escape(plan.goal)}</strong><ol>${plan.steps.map(s=>`<li><b>${escape(role[s.agent]||s.agent)}</b> · ${escape(s.task)}<small>依赖：${escape(s.dependencies.join(', ')||'无')}</small></li>`).join('')}</ol><p>${escape({pending:'等待确认，尚未改变游戏状态',executing:'正在执行',executed:'计划已执行',cancelled:'已取消'}[plan.status]||'计划')}</p>${plan.status==='pending'?`<div class="lh-buttons"><button data-action="plan-execute" data-id="${message.id}" class="lh-primary" ${this.busy?'disabled':''}>执行计划</button><button data-action="plan-modify" data-id="${message.id}">修改</button><button data-action="plan-cancel" data-id="${message.id}">取消</button></div>`:''}</div>`;}}
+    const signature=JSON.stringify([message.plan,!!this.busy]);if(planSlot.dataset.signature!==signature){planSlot.dataset.signature=signature;planSlot.innerHTML='';if(message.plan){const plan=message.plan,role={host:'主持',analysis:'分析',judgment:'判定',intelligence:'情报',character:'历史角色记录'};planSlot.innerHTML=`<div class="lh-plan-card"><strong>${escape(plan.goal)}</strong><ol>${plan.steps.map(s=>`<li><b>${escape(role[s.agent]||s.agent)}</b> · ${escape(s.task)}<small>依赖：${escape(s.dependencies.join(', ')||'无')}</small></li>`).join('')}</ol><p>${escape({pending:'等待确认，尚未改变游戏状态',executing:'正在执行',executed:'计划已执行',cancelled:'已取消'}[plan.status]||'计划')}</p>${plan.status==='pending'?`<div class="lh-buttons"><button data-action="plan-execute" data-id="${message.id}" class="lh-primary" ${this.busy?'disabled':''}>执行计划</button><button data-action="plan-modify" data-id="${message.id}">修改</button><button data-action="plan-cancel" data-id="${message.id}">取消</button></div>`:''}</div>`;}}
     renderActivity(box.querySelector('.lh-activity'),message,{state:this.activityViews.get(viewKey),markdown:(node,text)=>this.markdown(node,text)});
     const warning=box.querySelector('.lh-worldbook-warning');warning.hidden=!message.worldbookError;warning.textContent=message.worldbookError?`结算已保留，世界书待同步：${message.worldbookError}`:'';
     if(log)log.scrollTop=pinned&&this.activityViews.get(viewKey).follow!==false?log.scrollHeight:scroll;
@@ -478,7 +495,7 @@ class HostWorkspace {
     for (const input of commands.querySelectorAll('[data-command-enable]')) input.onchange = () => { if (input.checked) this.disabledCommandDrafts.delete(input.dataset.commandEnable); else this.disabledCommandDrafts.add(input.dataset.commandEnable); this.commandsDirty = true; this.settingsDirty = true; };
     for (const input of commands.querySelectorAll('[data-command-field]')) input.oninput = () => { this.commandDrafts[Number(input.closest('[data-index]').dataset.index)][input.dataset.commandField] = input.value; this.commandsDirty = true; this.settingsDirty = true; };
     const agents=document.createElement('section');
-    const agentLabels={host:'主持',judgment:'判定',analysis:'分析',intelligence:'情报',character:'角色'};
+    const agentLabels={host:'主持',judgment:'判定',analysis:'分析',intelligence:'情报'};
     agents.innerHTML=`<hr><h2>Agent 提示词</h2><div class="lh-agent-prompt-grid">${Object.entries(AGENT_PROMPTS).map(([role,prompt])=>`<label class="lh-agent-prompt-field"><span>${agentLabels[role]||role}</span><textarea data-agent-prompt="${role}" aria-label="${agentLabels[role]||role} Agent 提示词" rows="8">${escape(this.agentPromptDrafts[role]||prompt)}</textarea></label>`).join('')}</div><button data-action="agents-save" class="lh-primary">保存 Agent 提示词</button><hr><h2>版本与更新</h2><p class="lh-installed-version">当前 ${VERSION}</p><div class="lh-buttons"><button data-action="update-check">检查更新</button><a href="${REPOSITORY}/releases" target="_blank" rel="noopener noreferrer">发布说明</a><button data-action="update-install" hidden>安装 stable 更新</button></div><p class="lh-update-status"></p>`;main.querySelector('.lh-settings').append(agents);
     this.renderUpdateStatus();
     for(const field of agents.querySelectorAll('[data-agent-prompt]'))field.oninput=()=>{this.agentPromptDrafts[field.dataset.agentPrompt]=field.value;this.agentPromptsDirty=true;this.settingsDirty=true;};

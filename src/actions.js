@@ -26,7 +26,13 @@ export async function executeInquiry(run,engine,args,input,checkpoint=async()=>{
 
 export async function executeCombatBlock(run,engine,args,checkpoint=async()=>{}){
   if(run.combatBlock?.completed)return {...run.combatBlock,reused:true};
-  if(!args.id||!args.allies?.length||!args.enemies?.includes(args.majorEnemyId)||!args.basis?.trim()||args.rounds?.length!==5)throw new Error('五次交锋块需固定身份、双方、主要敌人、依据及五项战前行动。');
+  // An existing declaration must keep the original dice purposes and signatures on resume.
+  const fixed=run.combatBlock?.signature?JSON.parse(run.combatBlock.signature):null;
+  const overrideRounds=new Set();for(const row of args.roundOverrides||[]){if(!Number.isInteger(row.round)||row.round<1||row.round>5||overrideRounds.has(row.round))throw new Error('单轮覆盖需使用不重复的1—5轮号。');overrideRounds.add(row.round);}
+  const declaration={...args,rounds:args.rounds||fixed?.rounds||Array.from({length:5},(_,i)=>({action:'战斗对抗',attackerSide:args.attackerSide||'allies',defenseField:args.defenseField||'defense',...(args.roundOverrides||[]).find(r=>r.round===i+1)}))};
+  args=declaration;
+  if(!args.id||!args.allies?.length||!args.enemies?.includes(args.majorEnemyId)||!args.basis?.trim()||args.rounds?.length!==5)throw new Error('五次对抗需固定身份、双方、主要敌人及判定依据。');
+  for(const round of args.rounds)round.action??='战斗对抗';
   for(const round of args.rounds)if(!round.action?.trim()||!['allies','enemies'].includes(round.attackerSide)||!['defense','speed'].includes(round.defenseField))throw new Error('每次交锋必须在投骰前确定行动、攻守方和对抗属性。');
   const signature=JSON.stringify(args);if(run.combatBlock?.signature&&run.combatBlock.signature!==signature)throw new Error('ACTION_CONFLICT：已开始的交锋声明不可见骰后修改。');
   run.combatBlock={signature};await checkpoint();const staged=structuredClone(run),prefix=`block:${args.id}`;

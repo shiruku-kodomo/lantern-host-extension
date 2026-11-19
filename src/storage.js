@@ -10,8 +10,8 @@ export class LocalStore {
       const req = factory.open(`lantern-host:${account}`, 2);
       req.onupgradeneeded = () => { for (const name of GAME_STORES) if (!req.result.objectStoreNames.contains(name)) req.result.createObjectStore(name); };
       req.onsuccess = () => { const db=req.result;db.onversionchange=()=>db.close();
-        const stores=['records','branches','entities','definitions','quests','runs','snapshots'];const tx=db.transaction(stores,'readwrite'),marker=tx.objectStore('records').get('migration:world-v2');
-        marker.onsuccess=()=>{if(marker.result===2)return;for(const name of stores.filter(n=>n!=='records')){const request=tx.objectStore(name).openCursor();request.onsuccess=()=>{const c=request.result;if(!c)return;const old=JSON.stringify(c.value),value=migrateRecord(name,c.value);if(JSON.stringify(value)!==old)c.update(value);c.continue();};}tx.objectStore('records').put(2,'migration:world-v2');};
+        const stores=['records','branches','entities','definitions','quests','runs','snapshots','plans'];const tx=db.transaction(stores,'readwrite'),marker=tx.objectStore('records').get('migration:runtime-v3');
+        marker.onsuccess=()=>{if(marker.result===3)return;for(const name of stores.filter(n=>n!=='records')){const request=tx.objectStore(name).openCursor();request.onsuccess=()=>{const c=request.result;if(!c)return;const old=JSON.stringify(c.value),value=migrateRecord(name,c.value);if(JSON.stringify(value)!==old)c.update(value);c.continue();};}tx.objectStore('records').put(3,'migration:runtime-v3');};
         tx.oncomplete=()=>resolve(db);tx.onabort=tx.onerror=()=>reject(storageFailure(tx.error));
       };
       req.onerror = () => reject(new Error('无法打开主持本地存储。'));

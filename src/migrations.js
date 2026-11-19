@@ -1,5 +1,6 @@
 // Versioned runtime migration. Historical input, events and dice remain audit records.
 export const WORLD_VERSION=2;
+export function migratePlan(plan){if(plan&&['pending','executing'].includes(plan.status))for(const step of plan.steps||[])if(step.agent==='character')step.agent='host';return plan;}
 export const RETIRED_OPERATIONS=new Set(['route.create','movement.travel','currency.transfer','currency.quote','currency.trade','quest.pay']);
 export function migrateWorld(world){
   if(!world)return world;
@@ -11,13 +12,15 @@ export function migrateWorld(world){
 }
 export function migrateRecord(store,value){
   if(!value)return value;
-  if(store==='branches')migrateWorld(value.world);
+  if(store==='branches'){migrateWorld(value.world);for(const message of [...(value.session?.messages||[]),...(value.session?.conversation?.nodes||[])])migratePlan(message.plan);}
+  if(store==='plans')migratePlan(value);
   if(store==='snapshots'){migrateWorld(value.world);migrateWorld(value.after);}
   if(store==='entities')delete value.wallet;
   if(store==='definitions'){if(value.fields)for(const k of ['wallet','basePrice','currency','priceMultiplier'])delete value.fields[k];if(value.fieldSources)for(const k of ['wallet','basePrice'])delete value.fieldSources[k];}
   if(store==='quests'){delete value.reward;delete value.paid;delete value.payer;}
   if(store==='runs'){
     migrateWorld(value.before);migrateWorld(value.world);
+    migratePlan(value.plan);
     if(!['complete','committed'].includes(value.status)){
       value.cancelledOperations??=[];
       value.operations=(value.operations||[]).filter(op=>{if(!RETIRED_OPERATIONS.has(op.type))return true;if(!value.cancelledOperations.some(o=>o.id===op.id))value.cancelledOperations.push({...op,status:'cancelled',reason:'货币和移动机制已移除'});return false;});
